@@ -2,7 +2,7 @@
 
 В проекте два отдельных сканера:
 
-- `main.py` — long accumulation scanner;
+- `main.py` — Bothost entrypoint, запускает оба сканера;
 - `main_pump.py` — pump exhaustion scanner.
 - `main_bothost.py` — оба сканера в одном процессе для хостингов вроде Bothost.
 
