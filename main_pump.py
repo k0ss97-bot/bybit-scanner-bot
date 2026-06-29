@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 import time
 import traceback
 
 from bybit_client import BybitClient
 from config import get_settings
+from history import HistoryStore
 from pump_exhaustion_scanner import PumpExhaustionScanner
 from state import StateStore
 from telegram import TelegramNotifier, format_pump_signal
@@ -37,6 +40,12 @@ def build_start_message(settings) -> str:
     )
 
 
+def data_path(filename: str) -> str:
+    data_dir = Path(os.getenv("DATA_DIR", "data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return str(data_dir / filename)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="Run one scan and stop.")
@@ -52,10 +61,15 @@ def main() -> None:
     args = parse_args()
     settings = get_settings()
     client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
-    store = StateStore("pump_state.json")
+    store = StateStore(data_path("pump_state.json"))
     store.load()
 
-    scanner = PumpExhaustionScanner(client, store, settings)
+    scanner = PumpExhaustionScanner(
+        client,
+        store,
+        settings,
+        HistoryStore(data_path("scanner.db")),
+    )
     notifier = TelegramNotifier(
         settings.telegram_bot_token if settings.telegram_enabled else "",
         settings.telegram_chat_id if settings.telegram_enabled else "",

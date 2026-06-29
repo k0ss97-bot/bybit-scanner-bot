@@ -59,3 +59,13 @@ BYBIT_BASE_URL=https://api.bybit.com
 Не загружай `.env`, `state.json`, `pump_state.json`, `__pycache__`.
 
 Архив `bybit-scanner-bothost.zip` уже собран без этих файлов.
+
+## База динамики
+
+Бот сохраняет динамику в SQLite:
+
+```text
+$DATA_DIR/scanner.db
+```
+
+Там хранятся снимки рынка и история сигналов.

@@ -5,6 +5,7 @@ import time
 
 from bybit_client import BybitClient, Ticker
 from config import Settings
+from history import HistoryStore
 from long_scanner import pct_change
 from state import Snapshot, StateStore, SymbolState
 
@@ -41,10 +42,17 @@ class PumpScanResult:
 
 
 class PumpExhaustionScanner:
-    def __init__(self, client: BybitClient, store: StateStore, settings: Settings) -> None:
+    def __init__(
+        self,
+        client: BybitClient,
+        store: StateStore,
+        settings: Settings,
+        history: HistoryStore | None = None,
+    ) -> None:
         self.client = client
         self.store = store
         self.settings = settings
+        self.history = history
 
     def scan_once(self) -> PumpScanResult:
         now = int(time.time())
@@ -63,6 +71,19 @@ class PumpExhaustionScanner:
                 signal = self._build_signal(now, ticker, state)
                 if signal is not None:
                     state.last_alert_ts = now
+                    if self.history is not None:
+                        self.history.record_signal(
+                            signal_type="pump_exhaustion",
+                            symbol=signal.symbol,
+                            price=signal.price,
+                            open_interest_change_pct=signal.oi_change_pct,
+                            futures_cvd_change_pct=signal.cvd_change_pct,
+                            futures_cvd_delta_usdt=signal.cvd_delta_usdt,
+                            spot_cvd_change_pct=signal.spot_cvd_change_pct,
+                            spot_cvd_delta_usdt=signal.spot_cvd_delta_usdt,
+                            price_change_pct=signal.price_change_window_pct,
+                            payload=str(signal),
+                        )
                     signals.append(signal)
                 else:
                     skipped_symbols += 1
@@ -144,6 +165,20 @@ class PumpExhaustionScanner:
                 new_spot_trades=new_spot_trades,
             )
         )
+        if self.history is not None:
+            self.history.record_snapshot(
+                scanner="pump",
+                symbol=ticker.symbol,
+                ts=now,
+                price=ticker.price,
+                open_interest=ticker.open_interest,
+                futures_cvd=state.cumulative_cvd,
+                spot_cvd=state.cumulative_spot_cvd,
+                funding=ticker.funding_rate,
+                turnover_24h=ticker.turnover_24h,
+                new_futures_trades=new_trades,
+                new_spot_trades=new_spot_trades,
+            )
         min_ts = now - self.settings.pump_window_minutes * 60 * 3
         state.snapshots = [snapshot for snapshot in state.snapshots if snapshot.ts >= min_ts]
 

@@ -10,10 +10,10 @@ class Snapshot:
     ts: int
     oi: float
     cvd: float
-    spot_cvd: float = 0.0
     price: float
     funding: float
     turnover_24h: float
+    spot_cvd: float = 0.0
     new_trades: int = 0
     new_spot_trades: int = 0
 

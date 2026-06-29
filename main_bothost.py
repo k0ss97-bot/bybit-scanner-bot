@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 import threading
 import time
 import traceback
 
 from bybit_client import BybitClient
 from config import get_settings
+from history import HistoryStore
 from long_scanner import LongScanner
 from pump_exhaustion_scanner import PumpExhaustionScanner
 from state import StateStore
@@ -35,10 +38,21 @@ def build_notifier(settings) -> TelegramNotifier:
     )
 
 
+def data_path(filename: str) -> str:
+    data_dir = Path(os.getenv("DATA_DIR", "data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return str(data_dir / filename)
+
+
 def run_long_loop() -> None:
     settings = get_settings()
     client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
-    scanner = LongScanner(client, StateStore("state.json"), settings)
+    scanner = LongScanner(
+        client,
+        StateStore(data_path("state.json")),
+        settings,
+        HistoryStore(data_path("scanner.db")),
+    )
     scanner.store.load()
     notifier = build_notifier(settings)
 
@@ -68,7 +82,12 @@ def run_long_loop() -> None:
 def run_pump_loop() -> None:
     settings = get_settings()
     client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
-    scanner = PumpExhaustionScanner(client, StateStore("pump_state.json"), settings)
+    scanner = PumpExhaustionScanner(
+        client,
+        StateStore(data_path("pump_state.json")),
+        settings,
+        HistoryStore(data_path("scanner.db")),
+    )
     scanner.store.load()
     notifier = build_notifier(settings)
 
