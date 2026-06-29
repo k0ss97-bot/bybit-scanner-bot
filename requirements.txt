@@ -1,1 +1,1 @@
-# No external dependencies are required for the scanner MVP.
+python-telegram-bot
