@@ -1,0 +1,16 @@
+[Unit]
+Description=Bybit Long Accumulation Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/opt/bybit-scanner
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/bybit-scanner/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
