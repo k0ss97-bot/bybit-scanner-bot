@@ -15,11 +15,14 @@ class LongSignal:
     oi_change_pct: float
     cvd_change_pct: float
     cvd_delta_usdt: float
+    spot_cvd_change_pct: float
+    spot_cvd_delta_usdt: float
     funding_rate: float
     price_change_pct: float
     price: float
     turnover_24h: float
     new_trades: int
+    new_spot_trades: int
     consecutive_matches: int
 
 
@@ -48,7 +51,8 @@ class LongScanner:
             try:
                 state = self.store.get_symbol(ticker.symbol)
                 new_trades = self._update_cvd(ticker.symbol, state)
-                self._add_snapshot(now, ticker, state, new_trades)
+                new_spot_trades = self._update_spot_cvd(ticker.symbol, state)
+                self._add_snapshot(now, ticker, state, new_trades, new_spot_trades)
 
                 signal = self._build_signal(now, ticker, state)
                 if signal is not None:
@@ -92,22 +96,45 @@ class LongScanner:
         state.seen_trade_ids = recent_ids[:3000]
         return len(new_trades)
 
+    def _update_spot_cvd(self, symbol: str, state: SymbolState) -> int:
+        seen = set(state.seen_spot_trade_ids)
+        new_trades = []
+        try:
+            trades = self.client.get_recent_trades(symbol, category="spot")
+        except Exception as error:
+            print(f"{symbol}: spot CVD unavailable: {error}")
+            return 0
+
+        for trade in trades:
+            if trade.exec_id not in seen:
+                new_trades.append(trade)
+
+        for trade in new_trades:
+            state.cumulative_spot_cvd += trade.signed_notional
+
+        recent_ids = [trade.exec_id for trade in new_trades] + state.seen_spot_trade_ids
+        state.seen_spot_trade_ids = recent_ids[:3000]
+        return len(new_trades)
+
     def _add_snapshot(
         self,
         now: int,
         ticker: Ticker,
         state: SymbolState,
         new_trades: int,
+        new_spot_trades: int,
     ) -> None:
         state.snapshots.append(
             Snapshot(
                 ts=now,
                 oi=ticker.open_interest,
                 cvd=state.cumulative_cvd,
+                spot_cvd=state.cumulative_spot_cvd,
                 price=ticker.price,
                 funding=ticker.funding_rate,
                 turnover_24h=ticker.turnover_24h,
                 new_trades=new_trades,
+                new_spot_trades=new_spot_trades,
             )
         )
         min_ts = now - self.settings.window_minutes * 60 * 3
@@ -131,6 +158,8 @@ class LongScanner:
         oi_change_pct = pct_change(previous.oi, current.oi)
         cvd_delta = current.cvd - previous.cvd
         cvd_change_pct = pct_change(previous.cvd, current.cvd)
+        spot_cvd_delta = current.spot_cvd - previous.spot_cvd
+        spot_cvd_change_pct = pct_change(previous.spot_cvd, current.spot_cvd)
         price_change_pct = pct_change(previous.price, current.price)
 
         matched = (
@@ -158,11 +187,14 @@ class LongScanner:
             oi_change_pct=oi_change_pct,
             cvd_change_pct=cvd_change_pct,
             cvd_delta_usdt=cvd_delta,
+            spot_cvd_change_pct=spot_cvd_change_pct,
+            spot_cvd_delta_usdt=spot_cvd_delta,
             funding_rate=ticker.funding_rate,
             price_change_pct=price_change_pct,
             price=ticker.price,
             turnover_24h=ticker.turnover_24h,
             new_trades=current.new_trades,
+            new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
         )
 

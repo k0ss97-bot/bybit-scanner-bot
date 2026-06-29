@@ -80,10 +80,15 @@ class BybitClient:
             )
         return tickers
 
-    def get_recent_trades(self, symbol: str, limit: int = 1000) -> list[Trade]:
+    def get_recent_trades(
+        self,
+        symbol: str,
+        limit: int = 1000,
+        category: str = "linear",
+    ) -> list[Trade]:
         data = self._get(
             "/v5/market/recent-trade",
-            {"category": "linear", "symbol": symbol, "limit": limit},
+            {"category": category, "symbol": symbol, "limit": limit},
         )
         trades = []
         for item in data["result"]["list"]:

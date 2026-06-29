@@ -57,26 +57,29 @@ class TelegramNotifier:
 
 def format_signal(signal: LongSignal) -> str:
     return (
-        "LONG WATCH\n\n"
+        "🟢 LONG WATCH\n\n"
         f"Монета: {signal.symbol}\n"
         f"График: https://www.bybit.com/trade/usdt/{signal.symbol}\n"
         f"Окно: {signal.window_minutes}m\n\n"
         f"OI: +{signal.oi_change_pct:.2f}%\n"
-        f"CVD: +{signal.cvd_change_pct:.2f}%\n"
-        f"CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
+        f"Futures CVD: +{signal.cvd_change_pct:.2f}%\n"
+        f"Futures CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
+        f"Spot CVD: {signal.spot_cvd_change_pct:+.2f}%\n"
+        f"Spot CVD delta: {signal.spot_cvd_delta_usdt:,.0f} USDT\n"
         f"Funding: {signal.funding_rate * 100:.4f}%\n"
         f"Price: {signal.price_change_pct:+.2f}%\n"
         f"Last price: {signal.price:g}\n"
         f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n\n"
         f"New trades: {signal.new_trades}\n"
+        f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
-        "Причина: OI растет, CVD растет, цена удерживается. Возможное накопление позиции / long squeeze setup."
+        "Причина: OI растет, futures CVD растет, цена удерживается. Возможное накопление позиции / long squeeze setup."
     )
 
 
 def format_pump_signal(signal: PumpExhaustionSignal) -> str:
     return (
-        "PUMP EXHAUSTION WATCH\n\n"
+        "🔴 PUMP EXHAUSTION WATCH\n\n"
         f"Монета: {signal.symbol}\n"
         f"График: https://www.bybit.com/trade/usdt/{signal.symbol}\n"
         f"Окно слабости: {signal.window_minutes}m\n\n"
@@ -84,14 +87,17 @@ def format_pump_signal(signal: PumpExhaustionSignal) -> str:
         f"Откат от high разгона: {signal.drawdown_from_high_pct:.2f}%\n"
         f"OI за окно: {signal.oi_change_pct:+.2f}%\n"
         f"Требуемое падение OI: -{signal.required_oi_drop_pct:.2f}%\n"
-        f"CVD за окно: {signal.cvd_change_pct:+.2f}%\n"
-        f"CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
+        f"Futures CVD за окно: {signal.cvd_change_pct:+.2f}%\n"
+        f"Futures CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
+        f"Spot CVD за окно: {signal.spot_cvd_change_pct:+.2f}%\n"
+        f"Spot CVD delta: {signal.spot_cvd_delta_usdt:,.0f} USDT\n"
         f"Price за окно: {signal.price_change_window_pct:+.2f}%\n"
         f"Funding: {signal.funding_rate * 100:.4f}%\n"
         f"Last price: {signal.price:g}\n"
         f"High разгона: {signal.high_price_24h:g}\n"
         f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
         f"New trades: {signal.new_trades}\n"
+        f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
         "Причина: монета сильно росла 1-2 дня, откатилась от хая, OI стоит/падает, futures CVD уходит в минус. Возможное распределение / long trap."
     )
