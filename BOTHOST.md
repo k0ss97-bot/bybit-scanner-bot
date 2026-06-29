@@ -16,7 +16,7 @@ python main_bothost.py
 В панели Bothost добавь:
 
 ```text
-TELEGRAM_BOT_TOKEN=токен_бота
+SCANNER_BOT_TOKEN=токен_бота
 TELEGRAM_CHAT_ID=твой_chat_id
 TELEGRAM_ENABLED=true
 VERIFY_SSL=true

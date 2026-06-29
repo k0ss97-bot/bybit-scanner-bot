@@ -80,7 +80,9 @@ def get_settings() -> Settings:
     load_env_file()
     return Settings(
         telegram_bot_token=_first_env(
+            "SCANNER_BOT_TOKEN",
             "TELEGRAM_BOT_TOKEN",
+            "BOT_API_TOKEN",
             "BOT_TOKEN",
             "TOKEN",
             "TELEGRAM_TOKEN",
