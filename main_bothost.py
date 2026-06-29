@@ -96,6 +96,14 @@ def run_pump_loop() -> None:
 
 
 def main() -> None:
+    settings = get_settings()
+    print(
+        "Config check: "
+        f"telegram_enabled={settings.telegram_enabled}, "
+        f"token_present={bool(settings.telegram_bot_token)}, "
+        f"chat_id_present={bool(settings.telegram_chat_id)}",
+        flush=True,
+    )
     long_thread = threading.Thread(target=run_long_loop, name="long-scanner")
     pump_thread = threading.Thread(target=run_pump_loop, name="pump-scanner")
     long_thread.start()

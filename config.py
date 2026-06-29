@@ -31,6 +31,14 @@ def _bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _first_env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -71,15 +79,21 @@ class Settings:
 def get_settings() -> Settings:
     load_env_file()
     return Settings(
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+        telegram_bot_token=_first_env(
+            "TELEGRAM_BOT_TOKEN",
+            "BOT_TOKEN",
+            "TOKEN",
+            "TELEGRAM_TOKEN",
+            "API_TOKEN",
+        ),
+        telegram_chat_id=_first_env("TELEGRAM_CHAT_ID", "CHAT_ID"),
         bybit_base_url=os.getenv("BYBIT_BASE_URL", "https://api.bybit.com"),
         scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 60),
         window_minutes=_int("WINDOW_MINUTES", 15),
         oi_threshold_pct=_float("OI_THRESHOLD_PCT", 5),
         cvd_threshold_pct=_float("CVD_THRESHOLD_PCT", 5),
         min_cvd_delta_usdt=_float("MIN_CVD_DELTA_USDT", 10000),
-        min_turnover_24h_usdt=_float("MIN_TURNOVER_24H_USDT", 10000000),
+        min_turnover_24h_usdt=_float("MIN_TURNOVER_24H_USDT", 5000000),
         max_symbols=_int("MAX_SYMBOLS", 100),
         alert_cooldown_minutes=_int("ALERT_COOLDOWN_MINUTES", 60),
         verify_ssl=_bool("VERIFY_SSL", True),
@@ -92,14 +106,14 @@ def get_settings() -> Settings:
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
         pump_window_minutes=_int("PUMP_WINDOW_MINUTES", 15),
         pump_lookback_days=_int("PUMP_LOOKBACK_DAYS", 2),
-        pump_min_price_growth_lookback_pct=_float("PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 50),
+        pump_min_price_growth_lookback_pct=_float("PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 30),
         pump_min_drawdown_from_high_pct=_float("PUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 10),
         pump_max_oi_change_pct=_float("PUMP_MAX_OI_CHANGE_PCT", 0),
         pump_oi_drop_ratio_to_drawdown=_float("PUMP_OI_DROP_RATIO_TO_DRAWDOWN", 0.3),
         pump_min_negative_cvd_change_pct=_float("PUMP_MIN_NEGATIVE_CVD_CHANGE_PCT", 5),
         pump_min_negative_cvd_delta_usdt=_float("PUMP_MIN_NEGATIVE_CVD_DELTA_USDT", 10000),
         pump_max_price_change_window_pct=_float("PUMP_MAX_PRICE_CHANGE_WINDOW_PCT", 0),
-        pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 10000000),
+        pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 5000000),
         pump_max_symbols=_int("PUMP_MAX_SYMBOLS", 100),
         pump_min_new_trades=_int("PUMP_MIN_NEW_TRADES", 50),
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 2),
