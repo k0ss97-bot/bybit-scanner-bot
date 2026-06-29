@@ -47,6 +47,7 @@ class LongScanner:
         self.store = store
         self.settings = settings
         self.history = history
+        self.no_spot_symbols: set[str] = set()
 
     def scan_once(self) -> ScanResult:
         now = int(time.time())
@@ -118,12 +119,18 @@ class LongScanner:
         return len(new_trades)
 
     def _update_spot_cvd(self, symbol: str, state: SymbolState) -> int:
+        if symbol in self.no_spot_symbols:
+            return 0
+
         seen = set(state.seen_spot_trade_ids)
         new_trades = []
         try:
             trades = self.client.get_recent_trades(symbol, category="spot")
         except Exception as error:
-            print(f"{symbol}: spot CVD unavailable: {error}")
+            if "Not supported symbols" in str(error):
+                self.no_spot_symbols.add(symbol)
+            else:
+                print(f"{symbol}: spot CVD unavailable: {error}")
             return 0
 
         for trade in trades:
