@@ -45,6 +45,16 @@ class BaseStructure:
 
 
 @dataclass(frozen=True)
+class BaseCacheEntry:
+    ts: int
+    lookback_days: int
+    base_growth_pct: float
+    base_high_price: float
+    base_avg_turnover: float
+    base_open_price: float
+
+
+@dataclass(frozen=True)
 class ScanResult:
     signals: list[LongSignal]
     scanned_symbols: int
@@ -65,6 +75,7 @@ class LongScanner:
         self.settings = settings
         self.history = history
         self.no_spot_symbols: set[str] = set()
+        self.base_cache: dict[str, BaseCacheEntry] = {}
 
     def scan_once(self) -> ScanResult:
         now = int(time.time())
@@ -281,6 +292,19 @@ class LongScanner:
         )
 
     def _get_base_structure(self, ticker: Ticker) -> BaseStructure | None:
+        now = int(time.time())
+        cached = self.base_cache.get(ticker.symbol)
+        cache_ttl = max(1, self.settings.long_base_cache_minutes) * 60
+        if cached is not None and now - cached.ts < cache_ttl:
+            return BaseStructure(
+                lookback_days=cached.lookback_days,
+                base_growth_pct=cached.base_growth_pct,
+                current_from_base_pct=pct_change(cached.base_open_price, ticker.price),
+                base_high_price=cached.base_high_price,
+                base_avg_turnover=cached.base_avg_turnover,
+                turnover_ratio_to_base=safe_ratio(ticker.turnover_24h, cached.base_avg_turnover),
+            )
+
         lookback_days = max(2, self.settings.long_lookback_days)
         klines = self.client.get_daily_klines(ticker.symbol, limit=lookback_days + 1)
         if len(klines) < lookback_days:
@@ -294,9 +318,18 @@ class LongScanner:
         base_open = base_klines[0].open_price
         base_high = max(kline.high_price for kline in base_klines)
         base_avg_turnover = sum(kline.turnover for kline in base_klines) / len(base_klines)
+        base_growth_pct = pct_change(base_open, base_high)
+        self.base_cache[ticker.symbol] = BaseCacheEntry(
+            ts=now,
+            lookback_days=len(base_klines),
+            base_growth_pct=base_growth_pct,
+            base_high_price=base_high,
+            base_avg_turnover=base_avg_turnover,
+            base_open_price=base_open,
+        )
         return BaseStructure(
             lookback_days=len(base_klines),
-            base_growth_pct=pct_change(base_open, base_high),
+            base_growth_pct=base_growth_pct,
             current_from_base_pct=pct_change(base_open, ticker.price),
             base_high_price=base_high,
             base_avg_turnover=base_avg_turnover,
