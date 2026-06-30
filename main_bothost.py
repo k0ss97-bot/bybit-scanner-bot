@@ -46,7 +46,7 @@ def data_path(filename: str) -> str:
 
 def run_long_loop() -> None:
     settings = get_settings()
-    client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
+    client = build_bybit_client(settings)
     history = HistoryStore(data_path("scanner.db"))
     scanner = LongScanner(
         client,
@@ -84,7 +84,7 @@ def run_long_loop() -> None:
 
 def run_pump_loop() -> None:
     settings = get_settings()
-    client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
+    client = build_bybit_client(settings)
     history = HistoryStore(data_path("scanner.db"))
     scanner = PumpExhaustionScanner(
         client,
@@ -135,6 +135,16 @@ def main() -> None:
     pump_thread.start()
     long_thread.join()
     pump_thread.join()
+
+
+def build_bybit_client(settings) -> BybitClient:
+    return BybitClient(
+        settings.bybit_base_url,
+        verify_ssl=settings.verify_ssl,
+        min_request_interval_seconds=settings.bybit_min_request_interval_seconds,
+        rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
+        max_retries=settings.bybit_max_retries,
+    )
 
 
 if __name__ == "__main__":

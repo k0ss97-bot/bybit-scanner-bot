@@ -54,6 +54,7 @@ class PumpExhaustionScanner:
         self.settings = settings
         self.history = history
         self.no_spot_symbols: set[str] = set()
+        self.last_spot_cvd_update_ts: dict[str, int] = {}
 
     def scan_once(self) -> PumpScanResult:
         now = int(time.time())
@@ -129,6 +130,11 @@ class PumpExhaustionScanner:
     def _update_spot_cvd(self, symbol: str, state: SymbolState) -> int:
         if symbol in self.no_spot_symbols:
             return 0
+        now = int(time.time())
+        last_update_ts = self.last_spot_cvd_update_ts.get(symbol, 0)
+        if now - last_update_ts < self.settings.spot_cvd_update_interval_seconds:
+            return 0
+        self.last_spot_cvd_update_ts[symbol] = now
 
         seen = set(state.seen_spot_trade_ids)
         new_trades = []

@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import ssl
+import threading
+import time
 from typing import Any
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -48,15 +51,24 @@ class Kline:
 
 
 class BybitClient:
+    _lock = threading.Lock()
+    _last_request_ts = 0.0
+
     def __init__(
         self,
         base_url: str,
         timeout_seconds: int = 15,
         verify_ssl: bool = True,
+        min_request_interval_seconds: float = 0.35,
+        rate_limit_backoff_seconds: float = 3,
+        max_retries: int = 2,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.ssl_context = None if verify_ssl else ssl._create_unverified_context()
+        self.min_request_interval_seconds = min_request_interval_seconds
+        self.rate_limit_backoff_seconds = rate_limit_backoff_seconds
+        self.max_retries = max_retries
 
     def get_linear_tickers(self) -> list[Ticker]:
         data = self._get("/v5/market/tickers", {"category": "linear"})
@@ -131,11 +143,34 @@ class BybitClient:
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}{path}?{urlencode(params)}"
-        with urlopen(url, timeout=self.timeout_seconds, context=self.ssl_context) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        if data.get("retCode") != 0:
+        for attempt in range(self.max_retries + 1):
+            self._wait_for_turn()
+            try:
+                with urlopen(url, timeout=self.timeout_seconds, context=self.ssl_context) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+            except URLError:
+                if attempt < self.max_retries:
+                    time.sleep(self.rate_limit_backoff_seconds * (attempt + 1))
+                    continue
+                raise
+            if data.get("retCode") == 0:
+                return data
+
+            if data.get("retCode") == 10006 and attempt < self.max_retries:
+                time.sleep(self.rate_limit_backoff_seconds * (attempt + 1))
+                continue
+
             raise RuntimeError(f"Bybit error {data.get('retCode')}: {data.get('retMsg')}")
-        return data
+
+        raise RuntimeError("Bybit request failed")
+
+    def _wait_for_turn(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait_seconds = self.min_request_interval_seconds - (now - self._last_request_ts)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+            self.__class__._last_request_ts = time.monotonic()
 
 
 def _to_float(value: Any) -> float:

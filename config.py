@@ -44,6 +44,9 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     bybit_base_url: str
+    bybit_min_request_interval_seconds: float
+    bybit_rate_limit_backoff_seconds: float
+    bybit_max_retries: int
     scan_interval_seconds: int
     window_minutes: int
     oi_threshold_pct: float
@@ -65,6 +68,9 @@ class Settings:
     long_min_turnover_ratio_to_base: float
     long_base_cache_minutes: int
     long_min_signal_score: int
+    long_min_spot_cvd_change_pct: float
+    long_min_spot_trades_for_filter: int
+    spot_cvd_update_interval_seconds: int
     pump_scan_interval_seconds: int
     pump_window_minutes: int
     pump_lookback_days: int
@@ -96,6 +102,9 @@ def get_settings() -> Settings:
         ),
         telegram_chat_id=_first_env("TELEGRAM_CHAT_ID", "CHAT_ID"),
         bybit_base_url=os.getenv("BYBIT_BASE_URL", "https://api.bybit.com"),
+        bybit_min_request_interval_seconds=_float("BYBIT_MIN_REQUEST_INTERVAL_SECONDS", 0.35),
+        bybit_rate_limit_backoff_seconds=_float("BYBIT_RATE_LIMIT_BACKOFF_SECONDS", 3),
+        bybit_max_retries=_int("BYBIT_MAX_RETRIES", 2),
         scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 60),
         window_minutes=_int("WINDOW_MINUTES", 15),
         oi_threshold_pct=_float("OI_THRESHOLD_PCT", 10),
@@ -117,6 +126,9 @@ def get_settings() -> Settings:
         long_min_turnover_ratio_to_base=_float("LONG_MIN_TURNOVER_RATIO_TO_BASE", 2),
         long_base_cache_minutes=_int("LONG_BASE_CACHE_MINUTES", 15),
         long_min_signal_score=_int("LONG_MIN_SIGNAL_SCORE", 5),
+        long_min_spot_cvd_change_pct=_float("LONG_MIN_SPOT_CVD_CHANGE_PCT", -5),
+        long_min_spot_trades_for_filter=_int("LONG_MIN_SPOT_TRADES_FOR_FILTER", 20),
+        spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
         pump_window_minutes=_int("PUMP_WINDOW_MINUTES", 15),
         pump_lookback_days=_int("PUMP_LOOKBACK_DAYS", 2),

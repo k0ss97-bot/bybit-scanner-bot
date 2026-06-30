@@ -76,6 +76,7 @@ class LongScanner:
         self.history = history
         self.no_spot_symbols: set[str] = set()
         self.base_cache: dict[str, BaseCacheEntry] = {}
+        self.last_spot_cvd_update_ts: dict[str, int] = {}
 
     def scan_once(self) -> ScanResult:
         now = int(time.time())
@@ -150,6 +151,11 @@ class LongScanner:
     def _update_spot_cvd(self, symbol: str, state: SymbolState) -> int:
         if symbol in self.no_spot_symbols:
             return 0
+        now = int(time.time())
+        last_update_ts = self.last_spot_cvd_update_ts.get(symbol, 0)
+        if now - last_update_ts < self.settings.spot_cvd_update_interval_seconds:
+            return 0
+        self.last_spot_cvd_update_ts[symbol] = now
 
         seen = set(state.seen_spot_trade_ids)
         new_trades = []
@@ -245,12 +251,17 @@ class LongScanner:
             price_change_pct=price_change_pct,
             base_structure=base_structure,
         )
+        spot_filter_ok = (
+            current.new_spot_trades < self.settings.long_min_spot_trades_for_filter
+            or spot_cvd_change_pct >= self.settings.long_min_spot_cvd_change_pct
+        )
 
         matched = (
             oi_change_pct >= self.settings.oi_threshold_pct
             and cvd_delta >= self.settings.min_cvd_delta_usdt
             and cvd_change_pct >= self.settings.cvd_threshold_pct
             and current.new_trades >= self.settings.min_new_trades
+            and spot_filter_ok
             and signal_score >= self.settings.long_min_signal_score
             and base_structure.base_growth_pct
             <= self.settings.long_max_price_growth_lookback_pct
