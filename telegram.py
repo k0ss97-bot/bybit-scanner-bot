@@ -61,6 +61,9 @@ def format_signal(signal: LongSignal) -> str:
         f"Монета: {signal.symbol}\n"
         f"График: https://www.bybit.com/trade/usdt/{signal.symbol}\n"
         f"Окно: {signal.window_minutes}m\n\n"
+        f"База {signal.lookback_days}d: {signal.base_growth_pct:+.2f}%\n"
+        f"Цена от начала базы: {signal.current_from_base_pct:+.2f}%\n"
+        f"High базы: {signal.base_high_price:g}\n"
         f"OI: +{signal.oi_change_pct:.2f}%\n"
         f"Futures CVD: +{signal.cvd_change_pct:.2f}%\n"
         f"Futures CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
@@ -73,7 +76,7 @@ def format_signal(signal: LongSignal) -> str:
         f"New trades: {signal.new_trades}\n"
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
-        "Причина: OI растет, futures CVD растет, цена удерживается. Возможное накопление позиции / long squeeze setup."
+        "Причина: монета не была сильно разогнана в базе, но сейчас резко растут OI и futures CVD. Возможное зарождение импульса."
     )
 
 

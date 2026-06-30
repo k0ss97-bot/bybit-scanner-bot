@@ -13,6 +13,10 @@ from state import Snapshot, StateStore, SymbolState
 class LongSignal:
     symbol: str
     window_minutes: int
+    lookback_days: int
+    base_growth_pct: float
+    current_from_base_pct: float
+    base_high_price: float
     oi_change_pct: float
     cvd_change_pct: float
     cvd_delta_usdt: float
@@ -25,6 +29,14 @@ class LongSignal:
     new_trades: int
     new_spot_trades: int
     consecutive_matches: int
+
+
+@dataclass(frozen=True)
+class BaseStructure:
+    lookback_days: int
+    base_growth_pct: float
+    current_from_base_pct: float
+    base_high_price: float
 
 
 @dataclass(frozen=True)
@@ -203,12 +215,19 @@ class LongScanner:
         spot_cvd_delta = current.spot_cvd - previous.spot_cvd
         spot_cvd_change_pct = pct_change(previous.spot_cvd, current.spot_cvd)
         price_change_pct = pct_change(previous.price, current.price)
+        base_structure = self._get_base_structure(ticker)
+        if base_structure is None:
+            state.consecutive_matches = 0
+            return None
 
         matched = (
             oi_change_pct >= self.settings.oi_threshold_pct
             and cvd_delta >= self.settings.min_cvd_delta_usdt
             and cvd_change_pct >= self.settings.cvd_threshold_pct
             and current.new_trades >= self.settings.min_new_trades
+            and base_structure.base_growth_pct
+            <= self.settings.long_max_price_growth_lookback_pct
+            and price_change_pct <= self.settings.long_max_price_change_window_pct
             and (
                 not self.settings.require_price_hold
                 or price_change_pct >= self.settings.price_min_change_pct
@@ -226,6 +245,10 @@ class LongScanner:
         return LongSignal(
             symbol=ticker.symbol,
             window_minutes=self.settings.window_minutes,
+            lookback_days=base_structure.lookback_days,
+            base_growth_pct=base_structure.base_growth_pct,
+            current_from_base_pct=base_structure.current_from_base_pct,
+            base_high_price=base_structure.base_high_price,
             oi_change_pct=oi_change_pct,
             cvd_change_pct=cvd_change_pct,
             cvd_delta_usdt=cvd_delta,
@@ -238,6 +261,26 @@ class LongScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+        )
+
+    def _get_base_structure(self, ticker: Ticker) -> BaseStructure | None:
+        lookback_days = max(2, self.settings.long_lookback_days)
+        klines = self.client.get_daily_klines(ticker.symbol, limit=lookback_days + 1)
+        if len(klines) < lookback_days:
+            return None
+
+        closed_klines = klines[:-1] if len(klines) > lookback_days else klines
+        base_klines = closed_klines[-lookback_days:]
+        if not base_klines:
+            return None
+
+        base_open = base_klines[0].open_price
+        base_high = max(kline.high_price for kline in base_klines)
+        return BaseStructure(
+            lookback_days=len(base_klines),
+            base_growth_pct=pct_change(base_open, base_high),
+            current_from_base_pct=pct_change(base_open, ticker.price),
+            base_high_price=base_high,
         )
 
     def _find_window_snapshot(self, now: int, state: SymbolState) -> Snapshot | None:

@@ -59,6 +59,9 @@ class Settings:
     require_price_hold: bool
     min_new_trades: int
     consecutive_checks: int
+    long_lookback_days: int
+    long_max_price_growth_lookback_pct: float
+    long_max_price_change_window_pct: float
     pump_scan_interval_seconds: int
     pump_window_minutes: int
     pump_lookback_days: int
@@ -92,8 +95,8 @@ def get_settings() -> Settings:
         bybit_base_url=os.getenv("BYBIT_BASE_URL", "https://api.bybit.com"),
         scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 60),
         window_minutes=_int("WINDOW_MINUTES", 15),
-        oi_threshold_pct=_float("OI_THRESHOLD_PCT", 5),
-        cvd_threshold_pct=_float("CVD_THRESHOLD_PCT", 5),
+        oi_threshold_pct=_float("OI_THRESHOLD_PCT", 10),
+        cvd_threshold_pct=_float("CVD_THRESHOLD_PCT", 10),
         min_cvd_delta_usdt=_float("MIN_CVD_DELTA_USDT", 10000),
         min_turnover_24h_usdt=_float("MIN_TURNOVER_24H_USDT", 5000000),
         max_symbols=_int("MAX_SYMBOLS", 100),
@@ -105,6 +108,9 @@ def get_settings() -> Settings:
         require_price_hold=_bool("REQUIRE_PRICE_HOLD", True),
         min_new_trades=_int("MIN_NEW_TRADES", 50),
         consecutive_checks=_int("CONSECUTIVE_CHECKS", 2),
+        long_lookback_days=_int("LONG_LOOKBACK_DAYS", 7),
+        long_max_price_growth_lookback_pct=_float("LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT", 20),
+        long_max_price_change_window_pct=_float("LONG_MAX_PRICE_CHANGE_WINDOW_PCT", 25),
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
         pump_window_minutes=_int("PUMP_WINDOW_MINUTES", 15),
         pump_lookback_days=_int("PUMP_LOOKBACK_DAYS", 2),
