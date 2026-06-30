@@ -233,7 +233,6 @@ class PumpExhaustionScanner:
             and cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt
             and cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct
             and price_change_window_pct <= self.settings.pump_max_price_change_window_pct
-            and current.new_trades >= self.settings.pump_min_new_trades
         )
 
         if not matched:

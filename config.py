@@ -83,7 +83,6 @@ class Settings:
     pump_max_price_change_window_pct: float
     pump_min_turnover_24h_usdt: float
     pump_max_symbols: int
-    pump_min_new_trades: int
     pump_consecutive_checks: int
     pump_alert_cooldown_minutes: int
     startup_notifications: bool
@@ -142,7 +141,6 @@ def get_settings() -> Settings:
         pump_max_price_change_window_pct=_float("PUMP_MAX_PRICE_CHANGE_WINDOW_PCT", 0),
         pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 5000000),
         pump_max_symbols=_int("PUMP_MAX_SYMBOLS", 100),
-        pump_min_new_trades=_int("PUMP_MIN_NEW_TRADES", 50),
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 2),
         pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 60),
         startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
