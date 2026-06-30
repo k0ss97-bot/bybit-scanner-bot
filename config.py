@@ -139,7 +139,7 @@ def get_settings() -> Settings:
         pump_min_negative_cvd_change_pct=_float("PUMP_MIN_NEGATIVE_CVD_CHANGE_PCT", 5),
         pump_min_negative_cvd_delta_usdt=_float("PUMP_MIN_NEGATIVE_CVD_DELTA_USDT", 10000),
         pump_max_price_change_window_pct=_float("PUMP_MAX_PRICE_CHANGE_WINDOW_PCT", 0),
-        pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 5000000),
+        pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 2000000),
         pump_max_symbols=_int("PUMP_MAX_SYMBOLS", 100),
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 2),
         pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 60),
