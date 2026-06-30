@@ -98,7 +98,7 @@ def get_settings() -> Settings:
         oi_threshold_pct=_float("OI_THRESHOLD_PCT", 10),
         cvd_threshold_pct=_float("CVD_THRESHOLD_PCT", 10),
         min_cvd_delta_usdt=_float("MIN_CVD_DELTA_USDT", 10000),
-        min_turnover_24h_usdt=_float("MIN_TURNOVER_24H_USDT", 5000000),
+        min_turnover_24h_usdt=_float("MIN_TURNOVER_24H_USDT", 1000000),
         max_symbols=_int("MAX_SYMBOLS", 100),
         alert_cooldown_minutes=_int("ALERT_COOLDOWN_MINUTES", 60),
         verify_ssl=_bool("VERIFY_SSL", True),
