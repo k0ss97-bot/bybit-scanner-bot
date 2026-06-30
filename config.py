@@ -64,6 +64,7 @@ class Settings:
     long_max_price_change_window_pct: float
     long_min_turnover_ratio_to_base: float
     long_base_cache_minutes: int
+    long_min_signal_score: int
     pump_scan_interval_seconds: int
     pump_window_minutes: int
     pump_lookback_days: int
@@ -115,6 +116,7 @@ def get_settings() -> Settings:
         long_max_price_change_window_pct=_float("LONG_MAX_PRICE_CHANGE_WINDOW_PCT", 25),
         long_min_turnover_ratio_to_base=_float("LONG_MIN_TURNOVER_RATIO_TO_BASE", 2),
         long_base_cache_minutes=_int("LONG_BASE_CACHE_MINUTES", 15),
+        long_min_signal_score=_int("LONG_MIN_SIGNAL_SCORE", 5),
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
         pump_window_minutes=_int("PUMP_WINDOW_MINUTES", 15),
         pump_lookback_days=_int("PUMP_LOOKBACK_DAYS", 2),

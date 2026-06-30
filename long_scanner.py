@@ -237,11 +237,21 @@ class LongScanner:
             state.consecutive_matches = 0
             return None
 
+        signal_score = self._score_signal(
+            oi_change_pct=oi_change_pct,
+            cvd_change_pct=cvd_change_pct,
+            cvd_delta=cvd_delta,
+            spot_cvd_change_pct=spot_cvd_change_pct,
+            price_change_pct=price_change_pct,
+            base_structure=base_structure,
+        )
+
         matched = (
             oi_change_pct >= self.settings.oi_threshold_pct
             and cvd_delta >= self.settings.min_cvd_delta_usdt
             and cvd_change_pct >= self.settings.cvd_threshold_pct
             and current.new_trades >= self.settings.min_new_trades
+            and signal_score >= self.settings.long_min_signal_score
             and base_structure.base_growth_pct
             <= self.settings.long_max_price_growth_lookback_pct
             and base_structure.turnover_ratio_to_base
@@ -270,14 +280,7 @@ class LongScanner:
             base_high_price=base_structure.base_high_price,
             base_avg_turnover=base_structure.base_avg_turnover,
             turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
-            signal_score=self._score_signal(
-                oi_change_pct=oi_change_pct,
-                cvd_change_pct=cvd_change_pct,
-                cvd_delta=cvd_delta,
-                spot_cvd_change_pct=spot_cvd_change_pct,
-                price_change_pct=price_change_pct,
-                base_structure=base_structure,
-            ),
+            signal_score=signal_score,
             oi_change_pct=oi_change_pct,
             cvd_change_pct=cvd_change_pct,
             cvd_delta_usdt=cvd_delta,
