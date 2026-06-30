@@ -98,6 +98,7 @@ class LongScanner:
                         self.history.record_signal(
                             signal_type="long",
                             symbol=signal.symbol,
+                            ts=now,
                             price=signal.price,
                             open_interest_change_pct=signal.oi_change_pct,
                             futures_cvd_change_pct=signal.cvd_change_pct,

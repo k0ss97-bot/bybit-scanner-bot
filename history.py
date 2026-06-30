@@ -60,6 +60,27 @@ class HistoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS signal_reviews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    reviewed_ts INTEGER NOT NULL,
+                    price_at_review REAL NOT NULL,
+                    move_pct REAL NOT NULL,
+                    max_favorable_pct REAL NOT NULL,
+                    max_adverse_pct REAL NOT NULL,
+                    UNIQUE(signal_id, horizon_minutes)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_signal_reviews_signal_id
+                ON signal_reviews(signal_id)
+                """
+            )
 
     def record_snapshot(
         self,
@@ -114,7 +135,9 @@ class HistoryStore:
         spot_cvd_delta_usdt: float,
         price_change_pct: float,
         payload: str,
+        ts: int | None = None,
     ) -> None:
+        ts = ts or int(time.time())
         with self._connect() as conn:
             conn.execute(
                 """
@@ -129,7 +152,7 @@ class HistoryStore:
                 (
                     signal_type,
                     symbol,
-                    int(time.time()),
+                    ts,
                     price,
                     open_interest_change_pct,
                     futures_cvd_change_pct,
@@ -140,3 +163,104 @@ class HistoryStore:
                     payload,
                 ),
             )
+
+    def update_signal_reviews(
+        self,
+        *,
+        now: int | None = None,
+        horizons_minutes: tuple[int, ...] = (60, 240, 1440),
+    ) -> int:
+        now = now or int(time.time())
+        reviewed = 0
+        with self._connect() as conn:
+            signals = conn.execute(
+                """
+                SELECT id, signal_type, symbol, ts, price
+                FROM signals
+                WHERE ts <= ?
+                ORDER BY ts ASC
+                """,
+                (now - min(horizons_minutes) * 60,),
+            ).fetchall()
+
+            for signal_id, signal_type, symbol, signal_ts, entry_price in signals:
+                for horizon_minutes in horizons_minutes:
+                    target_ts = signal_ts + horizon_minutes * 60
+                    if target_ts > now:
+                        continue
+                    exists = conn.execute(
+                        """
+                        SELECT 1
+                        FROM signal_reviews
+                        WHERE signal_id = ? AND horizon_minutes = ?
+                        """,
+                        (signal_id, horizon_minutes),
+                    ).fetchone()
+                    if exists:
+                        continue
+
+                    snapshots = conn.execute(
+                        """
+                        SELECT ts, price
+                        FROM market_snapshots
+                        WHERE symbol = ? AND ts >= ? AND ts <= ?
+                        ORDER BY ts ASC
+                        """,
+                        (symbol, signal_ts, target_ts),
+                    ).fetchall()
+                    if not snapshots:
+                        continue
+
+                    price_at_review = snapshots[-1][1]
+                    prices = [row[1] for row in snapshots]
+                    move_pct, max_favorable_pct, max_adverse_pct = _review_metrics(
+                        signal_type=signal_type,
+                        entry_price=entry_price,
+                        price_at_review=price_at_review,
+                        prices=prices,
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO signal_reviews (
+                            signal_id, horizon_minutes, reviewed_ts, price_at_review,
+                            move_pct, max_favorable_pct, max_adverse_pct
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            signal_id,
+                            horizon_minutes,
+                            now,
+                            price_at_review,
+                            move_pct,
+                            max_favorable_pct,
+                            max_adverse_pct,
+                        ),
+                    )
+                    reviewed += 1
+
+        return reviewed
+
+
+def _review_metrics(
+    *,
+    signal_type: str,
+    entry_price: float,
+    price_at_review: float,
+    prices: list[float],
+) -> tuple[float, float, float]:
+    if entry_price == 0:
+        return 0.0, 0.0, 0.0
+
+    high = max(prices)
+    low = min(prices)
+    if signal_type in {"pump", "pump_exhaustion"}:
+        move_pct = ((entry_price - price_at_review) / entry_price) * 100
+        max_favorable_pct = ((entry_price - low) / entry_price) * 100
+        max_adverse_pct = ((high - entry_price) / entry_price) * 100
+        return move_pct, max_favorable_pct, max_adverse_pct
+
+    move_pct = ((price_at_review - entry_price) / entry_price) * 100
+    max_favorable_pct = ((high - entry_price) / entry_price) * 100
+    max_adverse_pct = ((entry_price - low) / entry_price) * 100
+    return move_pct, max_favorable_pct, max_adverse_pct

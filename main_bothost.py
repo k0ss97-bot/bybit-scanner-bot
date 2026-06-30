@@ -47,11 +47,12 @@ def data_path(filename: str) -> str:
 def run_long_loop() -> None:
     settings = get_settings()
     client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
+    history = HistoryStore(data_path("scanner.db"))
     scanner = LongScanner(
         client,
         StateStore(data_path("state.json")),
         settings,
-        HistoryStore(data_path("scanner.db")),
+        history,
     )
     scanner.store.load()
     notifier = build_notifier(settings)
@@ -63,11 +64,13 @@ def run_long_loop() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send_long_signal(notifier, signal)
+            reviewed = history.update_signal_reviews()
             print(
                 "Long scan done: "
                 f"symbols={result.scanned_symbols}, "
                 f"signals={len(result.signals)}, "
-                f"failed={result.failed_symbols}",
+                f"failed={result.failed_symbols}, "
+                f"reviews={reviewed}",
                 flush=True,
             )
         except Exception:
@@ -82,11 +85,12 @@ def run_long_loop() -> None:
 def run_pump_loop() -> None:
     settings = get_settings()
     client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
+    history = HistoryStore(data_path("scanner.db"))
     scanner = PumpExhaustionScanner(
         client,
         StateStore(data_path("pump_state.json")),
         settings,
-        HistoryStore(data_path("scanner.db")),
+        history,
     )
     scanner.store.load()
     notifier = build_notifier(settings)
@@ -98,11 +102,13 @@ def run_pump_loop() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send_message(notifier, format_pump_signal(signal))
+            reviewed = history.update_signal_reviews()
             print(
                 "Pump scan done: "
                 f"symbols={result.scanned_symbols}, "
                 f"signals={len(result.signals)}, "
-                f"failed={result.failed_symbols}",
+                f"failed={result.failed_symbols}, "
+                f"reviews={reviewed}",
                 flush=True,
             )
         except Exception:
