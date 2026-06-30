@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+from json import JSONDecodeError
 from pathlib import Path
 
 
@@ -37,7 +38,16 @@ class StateStore:
     def load(self) -> None:
         if not self.path.exists():
             return
-        raw = json.loads(self.path.read_text())
+        try:
+            text = self.path.read_text()
+            if not text.strip():
+                self._quarantine_bad_state("empty")
+                return
+            raw = json.loads(text)
+        except (OSError, JSONDecodeError) as error:
+            self._quarantine_bad_state(type(error).__name__)
+            return
+
         for symbol, data in raw.get("symbols", {}).items():
             self.symbols[symbol] = SymbolState(
                 cumulative_cvd=float(data.get("cumulative_cvd", 0)),
@@ -50,10 +60,22 @@ class StateStore:
             )
 
     def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         raw = {"symbols": {symbol: asdict(state) for symbol, state in self.symbols.items()}}
-        self.path.write_text(json.dumps(raw, ensure_ascii=False, indent=2))
+        tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
+        tmp_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2))
+        tmp_path.replace(self.path)
 
     def get_symbol(self, symbol: str) -> SymbolState:
         if symbol not in self.symbols:
             self.symbols[symbol] = SymbolState()
         return self.symbols[symbol]
+
+    def _quarantine_bad_state(self, reason: str) -> None:
+        backup_path = self.path.with_suffix(f"{self.path.suffix}.bad")
+        try:
+            self.path.replace(backup_path)
+            print(f"State file reset: {self.path} was {reason}, backup={backup_path}", flush=True)
+        except OSError:
+            print(f"State file reset: {self.path} was {reason}", flush=True)
+        self.symbols = {}
