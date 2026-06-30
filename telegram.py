@@ -29,16 +29,20 @@ class TelegramNotifier:
     def send_signal(self, signal: LongSignal) -> None:
         self.send_message(format_signal(signal))
 
-    def send_message(self, text: str) -> None:
+    def send_message(self, text: str, reply_markup: dict | None = None) -> None:
         if not self.enabled:
             print(text)
             return
 
-        self._post("sendMessage", {
+        payload = {
             "chat_id": self.chat_id,
             "text": text,
             "disable_web_page_preview": True,
-        })
+        }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+
+        self._post("sendMessage", payload)
 
     def get_updates(self, offset: int | None = None, timeout_seconds: int = 20) -> list[dict]:
         if not self.enabled:

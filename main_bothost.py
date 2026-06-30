@@ -22,9 +22,24 @@ STATUS_LOCK = threading.Lock()
 SCANNER_STATUS: dict[str, dict[str, object]] = {}
 
 
-def safe_send_message(notifier: TelegramNotifier, text: str) -> None:
+def menu_keyboard() -> dict:
+    return {
+        "keyboard": [
+            [{"text": "📊 Статус"}, {"text": "⚙️ Настройки"}],
+            [{"text": "📈 Статистика"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def safe_send_message(
+    notifier: TelegramNotifier,
+    text: str,
+    reply_markup: dict | None = None,
+) -> None:
     try:
-        notifier.send_message(text)
+        notifier.send_message(text, reply_markup=reply_markup)
     except Exception as error:
         print(f"Telegram send failed: {error}", flush=True)
 
@@ -200,6 +215,22 @@ def format_stats_message(history: HistoryStore) -> str:
     return "\n".join(lines)
 
 
+def is_status_request(text: str) -> bool:
+    return text.startswith("/status") or text in {"статус", "📊 статус"}
+
+
+def is_settings_request(text: str) -> bool:
+    return text.startswith("/settings") or text in {"настройки", "⚙️ настройки"}
+
+
+def is_stats_request(text: str) -> bool:
+    return text.startswith("/stats") or text in {"статистика", "📈 статистика"}
+
+
+def is_menu_request(text: str) -> bool:
+    return text.startswith("/start") or text in {"меню", "/menu", "кнопки"}
+
+
 def run_status_loop() -> None:
     settings = get_settings()
     if not settings.status_commands_enabled:
@@ -218,12 +249,18 @@ def run_status_loop() -> None:
                 chat_id = str(chat.get("id") or "")
                 if chat_id != str(settings.telegram_chat_id):
                     continue
-                if text.startswith("/status"):
-                    safe_send_message(notifier, format_status_message())
-                elif text.startswith("/settings"):
-                    safe_send_message(notifier, format_settings_message(settings))
-                elif text.startswith("/stats"):
-                    safe_send_message(notifier, format_stats_message(history))
+                if is_status_request(text):
+                    safe_send_message(notifier, format_status_message(), menu_keyboard())
+                elif is_settings_request(text):
+                    safe_send_message(notifier, format_settings_message(settings), menu_keyboard())
+                elif is_stats_request(text):
+                    safe_send_message(notifier, format_stats_message(history), menu_keyboard())
+                elif is_menu_request(text):
+                    safe_send_message(
+                        notifier,
+                        "Кнопки включены. Выбери действие ниже.",
+                        menu_keyboard(),
+                    )
         except Exception as error:
             print(f"Status command loop error: {error}", flush=True)
 
