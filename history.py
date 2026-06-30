@@ -241,6 +241,37 @@ class HistoryStore:
 
         return reviewed
 
+    def get_signal_stats(self) -> list[tuple]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    s.signal_type,
+                    r.horizon_minutes,
+                    COUNT(*) AS total,
+                    AVG(r.move_pct) AS avg_move_pct,
+                    AVG(r.max_favorable_pct) AS avg_max_favorable_pct,
+                    AVG(r.max_adverse_pct) AS avg_max_adverse_pct,
+                    SUM(CASE WHEN r.move_pct > 0 THEN 1 ELSE 0 END) AS positive_count
+                FROM signal_reviews r
+                JOIN signals s ON s.id = r.signal_id
+                GROUP BY s.signal_type, r.horizon_minutes
+                ORDER BY s.signal_type, r.horizon_minutes
+                """
+            ).fetchall()
+
+    def get_recent_signals(self, limit: int = 5) -> list[tuple]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT id, signal_type, symbol, ts, price, price_change_pct
+                FROM signals
+                ORDER BY ts DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
 
 def _review_metrics(
     *,

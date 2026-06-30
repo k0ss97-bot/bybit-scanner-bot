@@ -140,6 +140,14 @@ SPOT_CVD_UPDATE_INTERVAL_SECONDS=300
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 
+Telegram-команды:
+
+```text
+/status - текущий прогресс сканеров и причины отсечения
+/settings - реальные настройки, которые применил бот
+/stats - статистика сигналов и последние сигналы
+```
+
 Настройки pump exhaustion scanner:
 
 ```text

@@ -122,12 +122,91 @@ def format_status_message() -> str:
     return "\n".join(lines)
 
 
+def format_settings_message(settings) -> str:
+    return (
+        "Текущие настройки:\n\n"
+        "Общее:\n"
+        f"MAX_SYMBOLS={settings.max_symbols}\n"
+        f"PUMP_MAX_SYMBOLS={settings.pump_max_symbols}\n"
+        f"SCAN_INTERVAL_SECONDS={settings.scan_interval_seconds}\n"
+        f"PUMP_SCAN_INTERVAL_SECONDS={settings.pump_scan_interval_seconds}\n"
+        f"BYBIT_MIN_REQUEST_INTERVAL_SECONDS={settings.bybit_min_request_interval_seconds:g}\n"
+        f"SPOT_CVD_UPDATE_INTERVAL_SECONDS={settings.spot_cvd_update_interval_seconds}\n\n"
+        "LONG:\n"
+        f"OI_THRESHOLD_PCT={settings.oi_threshold_pct:g}\n"
+        f"CVD_THRESHOLD_PCT={settings.cvd_threshold_pct:g}\n"
+        f"MIN_CVD_DELTA_USDT={settings.min_cvd_delta_usdt:g}\n"
+        f"MIN_TURNOVER_24H_USDT={settings.min_turnover_24h_usdt:g}\n"
+        f"LONG_LOOKBACK_DAYS={settings.long_lookback_days}\n"
+        f"LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT={settings.long_max_price_growth_lookback_pct:g}\n"
+        f"LONG_MIN_TURNOVER_RATIO_TO_BASE={settings.long_min_turnover_ratio_to_base:g}\n"
+        f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n\n"
+        "PUMP:\n"
+        f"PUMP_MIN_TURNOVER_24H_USDT={settings.pump_min_turnover_24h_usdt:g}\n"
+        f"PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.pump_min_price_growth_lookback_pct:g}\n"
+        f"PUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.pump_min_drawdown_from_high_pct:g}\n"
+        f"PUMP_MIN_SIGNAL_SCORE={settings.pump_min_signal_score}\n\n"
+        "Фильтры:\n"
+        f"BINANCE_CONFIRM_ENABLED={str(settings.binance_confirm_enabled).lower()}\n"
+        f"BINANCE_CONFIRMATION_REQUIRED={str(settings.binance_confirmation_required).lower()}\n"
+        f"WATCHLIST_ENABLED={str(settings.watchlist_enabled).lower()}\n"
+        f"STATUS_COMMANDS_ENABLED={str(settings.status_commands_enabled).lower()}"
+    )
+
+
+def format_stats_message(history: HistoryStore) -> str:
+    reviewed = history.update_signal_reviews()
+    rows = history.get_signal_stats()
+    recent = history.get_recent_signals(limit=5)
+
+    lines = ["Статистика сигналов:"]
+    if reviewed:
+        lines.append(f"Новых расчетов результата: {reviewed}")
+
+    if rows:
+        for (
+            signal_type,
+            horizon_minutes,
+            total,
+            avg_move_pct,
+            avg_max_favorable_pct,
+            avg_max_adverse_pct,
+            positive_count,
+        ) in rows:
+            win_rate = (positive_count / total) * 100 if total else 0
+            lines.append(
+                f"{signal_type} {horizon_minutes}m: "
+                f"сигналов={total}, "
+                f"winrate={win_rate:.1f}%, "
+                f"средн={avg_move_pct:+.2f}%, "
+                f"лучшее={avg_max_favorable_pct:+.2f}%, "
+                f"просадка={avg_max_adverse_pct:+.2f}%"
+            )
+    else:
+        lines.append("Пока нет рассчитанных результатов. Нужно дождаться 1ч/4ч/24ч после сигналов.")
+
+    lines.append("\nПоследние сигналы:")
+    if not recent:
+        lines.append("Пока нет сигналов.")
+        return "\n".join(lines)
+
+    now = int(time.time())
+    for signal_id, signal_type, symbol, ts, price, price_change_pct in recent:
+        age_minutes = int((now - ts) / 60)
+        lines.append(
+            f"#{signal_id} {signal_type} {symbol}: "
+            f"цена={price:g}, окно={price_change_pct:+.2f}%, возраст={age_minutes}m"
+        )
+    return "\n".join(lines)
+
+
 def run_status_loop() -> None:
     settings = get_settings()
     if not settings.status_commands_enabled:
         return
 
     notifier = build_notifier(settings)
+    history = HistoryStore(data_path("scanner.db"))
     offset = None
     while True:
         try:
@@ -137,8 +216,14 @@ def run_status_loop() -> None:
                 text = str(message.get("text") or "").strip().lower()
                 chat = message.get("chat") or {}
                 chat_id = str(chat.get("id") or "")
-                if text.startswith("/status") and chat_id == str(settings.telegram_chat_id):
+                if chat_id != str(settings.telegram_chat_id):
+                    continue
+                if text.startswith("/status"):
                     safe_send_message(notifier, format_status_message())
+                elif text.startswith("/settings"):
+                    safe_send_message(notifier, format_settings_message(settings))
+                elif text.startswith("/stats"):
+                    safe_send_message(notifier, format_stats_message(history))
         except Exception as error:
             print(f"Status command loop error: {error}", flush=True)
 

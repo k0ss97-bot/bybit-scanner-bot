@@ -80,6 +80,14 @@ BINANCE_CONFIRMATION_REQUIRED=false
 BINANCE_MIN_QUOTE_VOLUME_24H_USDT=10000000
 ```
 
+## Telegram-команды
+
+```text
+/status - текущий прогресс сканеров и причины отсечения
+/settings - реальные настройки, которые применил бот
+/stats - статистика сигналов и последние сигналы
+```
+
 ## Важно
 
 Не загружай `.env`, `state.json`, `pump_state.json`, `__pycache__`.
