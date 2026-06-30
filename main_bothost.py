@@ -15,9 +15,7 @@ from pump_exhaustion_scanner import PumpExhaustionScanner
 from state import StateStore
 from telegram import (
     TelegramNotifier,
-    format_long_watchlist,
     format_pump_signal,
-    format_pump_watchlist,
 )
 
 STATUS_LOCK = threading.Lock()
@@ -145,8 +143,6 @@ def run_long_loop() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send_long_signal(notifier, signal)
-            for alert in result.watchlist_alerts:
-                safe_send_message(notifier, format_long_watchlist(alert))
             reviewed = history.update_signal_reviews()
             update_status("LONG", result, reviewed)
             print(
@@ -190,8 +186,6 @@ def run_pump_loop() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send_message(notifier, format_pump_signal(signal))
-            for alert in result.watchlist_alerts:
-                safe_send_message(notifier, format_pump_watchlist(alert))
             reviewed = history.update_signal_reviews()
             update_status("PUMP", result, reviewed)
             print(

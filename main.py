@@ -12,7 +12,7 @@ from config import get_settings
 from history import HistoryStore
 from long_scanner import LongScanner
 from state import StateStore
-from telegram import TelegramNotifier, format_long_watchlist
+from telegram import TelegramNotifier
 
 
 def safe_send(notifier: TelegramNotifier, text: str) -> None:
@@ -114,8 +114,6 @@ def main() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 notifier.send_signal(signal)
-            for alert in result.watchlist_alerts:
-                safe_send(notifier, format_long_watchlist(alert))
             reviewed = scanner.history.update_signal_reviews() if scanner.history is not None else 0
             print(
                 "Long scan done: "

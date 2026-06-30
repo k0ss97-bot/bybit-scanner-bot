@@ -12,7 +12,7 @@ from config import get_settings
 from history import HistoryStore
 from pump_exhaustion_scanner import PumpExhaustionScanner
 from state import StateStore
-from telegram import TelegramNotifier, format_pump_signal, format_pump_watchlist
+from telegram import TelegramNotifier, format_pump_signal
 
 
 def safe_send(notifier: TelegramNotifier, text: str) -> None:
@@ -115,8 +115,6 @@ def main() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send(notifier, format_pump_signal(signal))
-            for alert in result.watchlist_alerts:
-                safe_send(notifier, format_pump_watchlist(alert))
             print(
                 "Pump scan done: "
                 f"symbols={result.scanned_symbols}, "

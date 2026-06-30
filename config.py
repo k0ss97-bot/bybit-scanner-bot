@@ -148,7 +148,7 @@ def get_settings() -> Settings:
         long_min_spot_cvd_change_pct=_float("LONG_MIN_SPOT_CVD_CHANGE_PCT", -5),
         long_min_spot_trades_for_filter=_int("LONG_MIN_SPOT_TRADES_FOR_FILTER", 20),
         spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
-        watchlist_enabled=_bool("WATCHLIST_ENABLED", True),
+        watchlist_enabled=_bool("WATCHLIST_ENABLED", False),
         watchlist_cooldown_minutes=_int("WATCHLIST_COOLDOWN_MINUTES", 120),
         watchlist_max_alerts_per_scan=_int("WATCHLIST_MAX_ALERTS_PER_SCAN", 3),
         alert_score_improvement=_int("ALERT_SCORE_IMPROVEMENT", 2),
