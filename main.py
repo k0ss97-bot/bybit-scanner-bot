@@ -41,6 +41,14 @@ def data_path(filename: str) -> str:
     return str(data_dir / filename)
 
 
+def format_rejections(rejection_reasons: dict[str, int], limit: int = 5) -> str:
+    if not rejection_reasons:
+        return "none"
+
+    items = sorted(rejection_reasons.items(), key=lambda item: item[1], reverse=True)
+    return ", ".join(f"{reason}={count}" for reason, count in items[:limit])
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="Run one scan and stop.")
@@ -98,7 +106,8 @@ def main() -> None:
                 f"symbols={result.scanned_symbols}, "
                 f"signals={len(result.signals)}, "
                 f"failed={result.failed_symbols}, "
-                f"reviews={reviewed}",
+                f"reviews={reviewed}, "
+                f"rejections={format_rejections(result.rejection_reasons)}",
                 flush=True,
             )
         except Exception:

@@ -39,6 +39,7 @@ class PumpScanResult:
     scanned_symbols: int
     failed_symbols: int
     skipped_symbols: int
+    rejection_reasons: dict[str, int]
 
 
 class PumpExhaustionScanner:
@@ -62,6 +63,7 @@ class PumpExhaustionScanner:
         signals = []
         failed_symbols = 0
         skipped_symbols = 0
+        rejection_reasons: dict[str, int] = {}
 
         for ticker in tickers:
             try:
@@ -70,7 +72,7 @@ class PumpExhaustionScanner:
                 new_spot_trades = self._update_spot_cvd(ticker.symbol, state)
                 self._add_snapshot(now, ticker, state, new_trades, new_spot_trades)
 
-                signal = self._build_signal(now, ticker, state)
+                signal = self._build_signal(now, ticker, state, rejection_reasons)
                 if signal is not None:
                     state.last_alert_ts = now
                     if self.history is not None:
@@ -100,6 +102,7 @@ class PumpExhaustionScanner:
             scanned_symbols=len(tickers),
             failed_symbols=failed_symbols,
             skipped_symbols=skipped_symbols,
+            rejection_reasons=rejection_reasons,
         )
 
     def _select_tickers(self) -> list[Ticker]:
@@ -201,19 +204,23 @@ class PumpExhaustionScanner:
         now: int,
         ticker: Ticker,
         state: SymbolState,
+        rejection_reasons: dict[str, int],
     ) -> PumpExhaustionSignal | None:
         if now - state.last_alert_ts < self.settings.pump_alert_cooldown_minutes * 60:
+            count_reason(rejection_reasons, "cooldown")
             return None
 
         current = state.snapshots[-1]
         previous = self._find_window_snapshot(current.ts, state)
         if previous is None:
             state.consecutive_matches = 0
+            count_reason(rejection_reasons, "warmup_no_window")
             return None
 
         structure = self._get_pump_structure(ticker)
         if structure is None:
             state.consecutive_matches = 0
+            count_reason(rejection_reasons, "no_pump_structure")
             return None
 
         price_growth_lookback_pct, drawdown_from_high_pct, high_price = structure
@@ -225,22 +232,29 @@ class PumpExhaustionScanner:
         price_change_window_pct = pct_change(previous.price, current.price)
         required_oi_drop_pct = self._required_oi_drop_pct(drawdown_from_high_pct)
 
-        matched = (
-            price_growth_lookback_pct >= self.settings.pump_min_price_growth_lookback_pct
-            and drawdown_from_high_pct <= -self.settings.pump_min_drawdown_from_high_pct
-            and oi_change_pct <= self.settings.pump_max_oi_change_pct
-            and oi_change_pct <= -required_oi_drop_pct
-            and cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt
-            and cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct
-            and price_change_window_pct <= self.settings.pump_max_price_change_window_pct
-        )
+        checks = {
+            "price_growth": price_growth_lookback_pct
+            >= self.settings.pump_min_price_growth_lookback_pct,
+            "drawdown": drawdown_from_high_pct
+            <= -self.settings.pump_min_drawdown_from_high_pct,
+            "oi_not_rising": oi_change_pct <= self.settings.pump_max_oi_change_pct,
+            "oi_drop_required": oi_change_pct <= -required_oi_drop_pct,
+            "cvd_delta": cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt,
+            "cvd_pct": cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct,
+            "price_window": price_change_window_pct
+            <= self.settings.pump_max_price_change_window_pct,
+        }
 
-        if not matched:
+        if not all(checks.values()):
             state.consecutive_matches = 0
+            for reason, passed in checks.items():
+                if not passed:
+                    count_reason(rejection_reasons, reason)
             return None
 
         state.consecutive_matches += 1
         if state.consecutive_matches < self.settings.pump_consecutive_checks:
+            count_reason(rejection_reasons, "confirmations_waiting")
             return None
 
         return PumpExhaustionSignal(
@@ -291,3 +305,7 @@ class PumpExhaustionScanner:
         if not candidates:
             return None
         return candidates[-1]
+
+
+def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:
+    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1

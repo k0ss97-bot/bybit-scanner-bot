@@ -60,6 +60,7 @@ class ScanResult:
     scanned_symbols: int
     failed_symbols: int
     skipped_symbols: int
+    rejection_reasons: dict[str, int]
 
 
 class LongScanner:
@@ -84,6 +85,7 @@ class LongScanner:
         signals = []
         failed_symbols = 0
         skipped_symbols = 0
+        rejection_reasons: dict[str, int] = {}
 
         for ticker in tickers:
             try:
@@ -92,7 +94,7 @@ class LongScanner:
                 new_spot_trades = self._update_spot_cvd(ticker.symbol, state)
                 self._add_snapshot(now, ticker, state, new_trades, new_spot_trades)
 
-                signal = self._build_signal(now, ticker, state)
+                signal = self._build_signal(now, ticker, state, rejection_reasons)
                 if signal is not None:
                     state.last_alert_ts = now
                     if self.history is not None:
@@ -122,6 +124,7 @@ class LongScanner:
             scanned_symbols=len(tickers),
             failed_symbols=failed_symbols,
             skipped_symbols=skipped_symbols,
+            rejection_reasons=rejection_reasons,
         )
 
     def _select_tickers(self) -> list[Ticker]:
@@ -222,14 +225,17 @@ class LongScanner:
         now: int,
         ticker: Ticker,
         state: SymbolState,
+        rejection_reasons: dict[str, int],
     ) -> LongSignal | None:
         if now - state.last_alert_ts < self.settings.alert_cooldown_minutes * 60:
+            count_reason(rejection_reasons, "cooldown")
             return None
 
         current = state.snapshots[-1]
         previous = self._find_window_snapshot(current.ts, state)
         if previous is None:
             state.consecutive_matches = 0
+            count_reason(rejection_reasons, "warmup_no_window")
             return None
 
         oi_change_pct = pct_change(previous.oi, current.oi)
@@ -241,6 +247,7 @@ class LongScanner:
         base_structure = self._get_base_structure(ticker)
         if base_structure is None:
             state.consecutive_matches = 0
+            count_reason(rejection_reasons, "no_base_structure")
             return None
 
         signal_score = self._score_signal(
@@ -256,30 +263,35 @@ class LongScanner:
             or spot_cvd_change_pct >= self.settings.long_min_spot_cvd_change_pct
         )
 
-        matched = (
-            oi_change_pct >= self.settings.oi_threshold_pct
-            and cvd_delta >= self.settings.min_cvd_delta_usdt
-            and cvd_change_pct >= self.settings.cvd_threshold_pct
-            and current.new_trades >= self.settings.min_new_trades
-            and spot_filter_ok
-            and signal_score >= self.settings.long_min_signal_score
-            and base_structure.base_growth_pct
-            <= self.settings.long_max_price_growth_lookback_pct
-            and base_structure.turnover_ratio_to_base
-            >= self.settings.long_min_turnover_ratio_to_base
-            and price_change_pct <= self.settings.long_max_price_change_window_pct
-            and (
+        checks = {
+            "oi": oi_change_pct >= self.settings.oi_threshold_pct,
+            "cvd_delta": cvd_delta >= self.settings.min_cvd_delta_usdt,
+            "cvd_pct": cvd_change_pct >= self.settings.cvd_threshold_pct,
+            "new_trades": current.new_trades >= self.settings.min_new_trades,
+            "spot_cvd": spot_filter_ok,
+            "score": signal_score >= self.settings.long_min_signal_score,
+            "base_growth": base_structure.base_growth_pct
+            <= self.settings.long_max_price_growth_lookback_pct,
+            "turnover_ratio": base_structure.turnover_ratio_to_base
+            >= self.settings.long_min_turnover_ratio_to_base,
+            "price_too_high": price_change_pct
+            <= self.settings.long_max_price_change_window_pct,
+            "price_hold": (
                 not self.settings.require_price_hold
                 or price_change_pct >= self.settings.price_min_change_pct
-            )
-        )
+            ),
+        }
 
-        if not matched:
+        if not all(checks.values()):
             state.consecutive_matches = 0
+            for reason, passed in checks.items():
+                if not passed:
+                    count_reason(rejection_reasons, reason)
             return None
 
         state.consecutive_matches += 1
         if state.consecutive_matches < self.settings.consecutive_checks:
+            count_reason(rejection_reasons, "confirmations_waiting")
             return None
 
         return LongSignal(
@@ -407,3 +419,7 @@ def safe_ratio(value: float, base: float) -> float:
     if base <= 0:
         return 999.0 if value > 0 else 0.0
     return value / base
+
+
+def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:
+    rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
