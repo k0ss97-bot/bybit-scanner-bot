@@ -20,6 +20,9 @@ from telegram import (
 
 STATUS_LOCK = threading.Lock()
 SCANNER_STATUS: dict[str, dict[str, object]] = {}
+SCANNER_PAUSED = {"LONG": False, "PUMP": False}
+WARNING_LOCK = threading.Lock()
+LAST_WARNING_TS: dict[str, int] = {}
 
 
 def menu_keyboard() -> dict:
@@ -27,7 +30,9 @@ def menu_keyboard() -> dict:
         "keyboard": [
             [{"text": "📊 Статус"}, {"text": "⚙️ Настройки"}],
             [{"text": "📈 Статистика"}, {"text": "❓ Почему нет сигналов"}],
-            [{"text": "🕘 Последние сигналы"}],
+            [{"text": "🎯 Ближайшие"}, {"text": "🕘 Последние сигналы"}],
+            [{"text": "🟢 LONG статус"}, {"text": "🔴 PUMP статус"}],
+            [{"text": "⏸ Пауза"}, {"text": "▶️ Старт"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -87,6 +92,7 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
             "rejection_reasons": dict(result.rejection_reasons),
+            "closest": format_closest_alerts(result.watchlist_alerts),
         }
 
 
@@ -100,6 +106,44 @@ def update_scanning_status(scanner: str, current: int | None = None, total: int 
             "current": current if current is not None else previous.get("current", 0),
             "total": total if total is not None else previous.get("total", 0),
         }
+
+
+def update_paused_status(scanner: str) -> None:
+    with STATUS_LOCK:
+        previous = SCANNER_STATUS.get(scanner, {})
+        SCANNER_STATUS[scanner] = {
+            **previous,
+            "stage": "paused",
+            "updated_ts": int(time.time()),
+        }
+
+
+def is_paused(scanner: str) -> bool:
+    return bool(SCANNER_PAUSED.get(scanner, False))
+
+
+def set_paused(value: bool) -> None:
+    for scanner in SCANNER_PAUSED:
+        SCANNER_PAUSED[scanner] = value
+
+
+def format_closest_alerts(alerts, limit: int = 5) -> list[str]:
+    if not alerts:
+        return []
+
+    sorted_alerts = sorted(
+        alerts,
+        key=lambda alert: (getattr(alert, "signal_score", 0), len(getattr(alert, "passed_checks", []))),
+        reverse=True,
+    )
+    lines = []
+    for alert in sorted_alerts[:limit]:
+        missing = ", ".join(getattr(alert, "missing_checks", [])[:4]) or "none"
+        lines.append(
+            f"{alert.symbol} score={alert.signal_score}/10 "
+            f"price={alert.price:g} не хватает: {missing}"
+        )
+    return lines
 
 
 def format_status_message() -> str:
@@ -133,10 +177,40 @@ def format_status_message() -> str:
             "\n"
             f"{scanner}: обновлено {ago}s назад\n"
             f"Монет: {data['symbols']}, сигналов: {data['signals']}, "
-            f"watchlist: {data['watchlist']}, ошибок: {data['failed']}\n"
+            f"почти сигналов: {data['watchlist']}, ошибок: {data['failed']}\n"
             f"Причины отсечения: {data['rejections']}"
         )
     return "\n".join(lines)
+
+
+def format_single_status_message(scanner: str) -> str:
+    scanner = scanner.upper()
+    with STATUS_LOCK:
+        data = dict(SCANNER_STATUS.get(scanner, {}))
+
+    if not data:
+        return f"{scanner}: еще нет данных."
+
+    now = int(time.time())
+    if data.get("stage") == "paused":
+        return f"{scanner}: на паузе."
+    if data.get("stage") == "scanning":
+        started_ago = now - int(data.get("started_ts", now))
+        current = int(data.get("current", 0))
+        total = int(data.get("total", 0))
+        progress = f"{current}/{total}" if total else "подготовка"
+        return (
+            f"{scanner}: скан идет {started_ago}s, прогресс {progress}\n"
+            f"Последние причины отсечения: {data.get('rejections', 'еще нет')}"
+        )
+
+    ago = now - int(data.get("updated_ts", now))
+    return (
+        f"{scanner}: обновлено {ago}s назад\n"
+        f"Монет: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
+        f"почти сигналов: {data.get('watchlist', 0)}, ошибок: {data.get('failed', 0)}\n"
+        f"Причины отсечения: {data.get('rejections', 'нет данных')}"
+    )
 
 
 def format_settings_message(settings) -> str:
@@ -240,8 +314,49 @@ def format_rejection_details_message() -> str:
             continue
 
         text_reasons = str(data.get("rejections", "none"))
-        lines.append(f"\n{scanner}: {text_reasons}")
+        if text_reasons == "none":
+            lines.append(
+                f"\n{scanner}: причин пока нет. Дождись завершения полного скана."
+            )
+        else:
+            lines.append(f"\n{scanner}: {text_reasons}")
 
+    return "\n".join(lines)
+
+
+def format_closest_message(history: HistoryStore) -> str:
+    with STATUS_LOCK:
+        snapshot = dict(SCANNER_STATUS)
+
+    lines = ["Ближайшие к сигналу:"]
+    has_live = False
+    for scanner in ("LONG", "PUMP"):
+        data = snapshot.get(scanner, {})
+        closest = data.get("closest", [])
+        lines.append(f"\n{scanner}:")
+        if isinstance(closest, list) and closest:
+            has_live = True
+            lines.extend(str(item) for item in closest[:5])
+        else:
+            lines.append("пока нет кандидатов из последнего скана")
+
+    if has_live:
+        return "\n".join(lines)
+
+    recent = history.get_recent_watchlist_candidates(limit=5)
+    if not recent:
+        lines.append("\nВ базе тоже пока нет почти сигналов.")
+        return "\n".join(lines)
+
+    lines.append("\nПоследние почти сигналы из базы:")
+    now = int(time.time())
+    for scanner, symbol, ts, score, price, passed_checks, missing_checks in recent:
+        age_minutes = int((now - ts) / 60)
+        missing = missing_checks or "none"
+        lines.append(
+            f"{scanner} {symbol}: score={score}/10, цена={price:g}, "
+            f"возраст={age_minutes}m, не хватает: {missing}"
+        )
     return "\n".join(lines)
 
 
@@ -263,6 +378,14 @@ def format_recent_signals_message(history: HistoryStore, limit: int = 10) -> str
 
 def is_status_request(text: str) -> bool:
     return text.startswith("/status") or text in {"статус", "📊 статус"}
+
+
+def status_target(text: str) -> str | None:
+    if text.startswith("/status long") or text in {"long статус", "🟢 long статус"}:
+        return "LONG"
+    if text.startswith("/status pump") or text in {"pump статус", "🔴 pump статус"}:
+        return "PUMP"
+    return None
 
 
 def is_settings_request(text: str) -> bool:
@@ -296,8 +419,51 @@ def is_recent_signals_request(text: str) -> bool:
     )
 
 
+def is_closest_request(text: str) -> bool:
+    return (
+        text.startswith("/closest")
+        or text in {
+            "ближайшие",
+            "🎯 ближайшие",
+            "почти сигналы",
+            "кандидаты",
+        }
+    )
+
+
+def is_pause_request(text: str) -> bool:
+    return text.startswith("/pause") or text in {"пауза", "⏸ пауза"}
+
+
+def is_start_request(text: str) -> bool:
+    return text.startswith("/resume") or text in {"старт", "▶️ старт", "продолжить"}
+
+
 def is_menu_request(text: str) -> bool:
     return text.startswith("/start") or text in {"меню", "/menu", "кнопки"}
+
+
+def maybe_send_rate_warning(
+    scanner: str,
+    failed_symbols: int,
+    notifier: TelegramNotifier,
+    threshold: int = 5,
+    cooldown_seconds: int = 1800,
+) -> None:
+    if failed_symbols < threshold:
+        return
+    now = int(time.time())
+    with WARNING_LOCK:
+        last_ts = LAST_WARNING_TS.get(scanner, 0)
+        if now - last_ts < cooldown_seconds:
+            return
+        LAST_WARNING_TS[scanner] = now
+    safe_send_message(
+        notifier,
+        f"{scanner}: много ошибок за скан ({failed_symbols}). "
+        "Если это Bybit rate limit, увеличь интервалы скана или паузу между запросами.",
+        menu_keyboard(),
+    )
 
 
 def run_status_loop() -> None:
@@ -318,7 +484,10 @@ def run_status_loop() -> None:
                 chat_id = str(chat.get("id") or "")
                 if chat_id != str(settings.telegram_chat_id):
                     continue
-                if is_status_request(text):
+                target = status_target(text)
+                if target is not None:
+                    safe_send_message(notifier, format_single_status_message(target), menu_keyboard())
+                elif is_status_request(text):
                     safe_send_message(notifier, format_status_message(), menu_keyboard())
                 elif is_settings_request(text):
                     safe_send_message(notifier, format_settings_message(settings), menu_keyboard())
@@ -332,6 +501,14 @@ def run_status_loop() -> None:
                         format_recent_signals_message(history),
                         menu_keyboard(),
                     )
+                elif is_closest_request(text):
+                    safe_send_message(notifier, format_closest_message(history), menu_keyboard())
+                elif is_pause_request(text):
+                    set_paused(True)
+                    safe_send_message(notifier, "Сканеры поставлены на паузу.", menu_keyboard())
+                elif is_start_request(text):
+                    set_paused(False)
+                    safe_send_message(notifier, "Сканеры снова работают.", menu_keyboard())
                 elif is_menu_request(text):
                     safe_send_message(
                         notifier,
@@ -366,6 +543,10 @@ def run_long_loop() -> None:
     notifier = build_notifier(settings)
 
     while True:
+        if is_paused("LONG"):
+            update_paused_status("LONG")
+            time.sleep(settings.scan_interval_seconds)
+            continue
         try:
             update_scanning_status("LONG")
             result = scanner.scan_once(
@@ -379,6 +560,7 @@ def run_long_loop() -> None:
                 safe_send_long_signal(notifier, signal)
             reviewed = history.update_signal_reviews()
             update_status("LONG", result, reviewed)
+            maybe_send_rate_warning("LONG", result.failed_symbols, notifier)
             print(
                 "Long scan done: "
                 f"symbols={result.scanned_symbols}, "
@@ -413,6 +595,10 @@ def run_pump_loop() -> None:
     notifier = build_notifier(settings)
 
     while True:
+        if is_paused("PUMP"):
+            update_paused_status("PUMP")
+            time.sleep(settings.pump_scan_interval_seconds)
+            continue
         try:
             update_scanning_status("PUMP")
             result = scanner.scan_once(
@@ -426,6 +612,7 @@ def run_pump_loop() -> None:
                 safe_send_message(notifier, format_pump_signal(signal))
             reviewed = history.update_signal_reviews()
             update_status("PUMP", result, reviewed)
+            maybe_send_rate_warning("PUMP", result.failed_symbols, notifier)
             print(
                 "Pump scan done: "
                 f"symbols={result.scanned_symbols}, "

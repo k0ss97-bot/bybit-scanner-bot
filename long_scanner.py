@@ -149,9 +149,20 @@ class LongScanner:
                     signals.append(signal)
                 elif (
                     watchlist_alert is not None
-                    and len(watchlist_alerts) < self.settings.watchlist_max_alerts_per_scan
+                    and len(watchlist_alerts) < max(5, self.settings.watchlist_max_alerts_per_scan)
                 ):
                     state.last_watchlist_ts = now
+                    if self.history is not None:
+                        self.history.record_watchlist_candidate(
+                            scanner="long",
+                            symbol=watchlist_alert.symbol,
+                            score=watchlist_alert.signal_score,
+                            price=watchlist_alert.price,
+                            passed_checks=watchlist_alert.passed_checks,
+                            missing_checks=watchlist_alert.missing_checks,
+                            payload=str(watchlist_alert),
+                            ts=now,
+                        )
                     watchlist_alerts.append(watchlist_alert)
                 else:
                     skipped_symbols += 1
@@ -423,11 +434,7 @@ class LongScanner:
         price_change_pct: float,
         turnover_ratio_to_base: float,
     ) -> LongWatchlistAlert | None:
-        if not self.settings.watchlist_enabled:
-            return None
         if signal_score < self.settings.long_watchlist_min_score:
-            return None
-        if now - state.last_watchlist_ts < self.settings.watchlist_cooldown_minutes * 60:
             return None
 
         passed_checks = [name for name, passed in checks.items() if passed]

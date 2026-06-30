@@ -81,6 +81,27 @@ class HistoryStore:
                 ON signal_reviews(signal_id)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS watchlist_candidates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scanner TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    score INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    passed_checks TEXT NOT NULL,
+                    missing_checks TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_watchlist_candidates_scanner_ts
+                ON watchlist_candidates(scanner, ts)
+                """
+            )
 
     def record_snapshot(
         self,
@@ -266,6 +287,52 @@ class HistoryStore:
                 """
                 SELECT id, signal_type, symbol, ts, price, price_change_pct
                 FROM signals
+                ORDER BY ts DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+    def record_watchlist_candidate(
+        self,
+        *,
+        scanner: str,
+        symbol: str,
+        score: int,
+        price: float,
+        passed_checks: list[str],
+        missing_checks: list[str],
+        payload: str,
+        ts: int | None = None,
+    ) -> None:
+        ts = ts or int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO watchlist_candidates (
+                    scanner, symbol, ts, score, price, passed_checks,
+                    missing_checks, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scanner,
+                    symbol,
+                    ts,
+                    score,
+                    price,
+                    ",".join(passed_checks),
+                    ",".join(missing_checks),
+                    payload,
+                ),
+            )
+
+    def get_recent_watchlist_candidates(self, limit: int = 10) -> list[tuple]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT scanner, symbol, ts, score, price, passed_checks, missing_checks
+                FROM watchlist_candidates
                 ORDER BY ts DESC
                 LIMIT ?
                 """,
