@@ -105,7 +105,7 @@ def main() -> None:
         verify_ssl=settings.verify_ssl,
     )
 
-    if args.test_telegram or settings.startup_notifications:
+    if args.test_telegram:
         safe_send(notifier, build_start_message(settings))
     if args.test_telegram:
         return
