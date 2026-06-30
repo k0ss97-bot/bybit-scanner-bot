@@ -84,9 +84,11 @@ class PumpExhaustionScanner:
         self.no_spot_symbols: set[str] = set()
         self.last_spot_cvd_update_ts: dict[str, int] = {}
 
-    def scan_once(self) -> PumpScanResult:
+    def scan_once(self, progress_callback=None) -> PumpScanResult:
         now = int(time.time())
         tickers = self._select_tickers()
+        if progress_callback is not None:
+            progress_callback(0, len(tickers))
         binance_tickers = self._get_binance_tickers()
         signals = []
         watchlist_alerts = []
@@ -94,7 +96,7 @@ class PumpExhaustionScanner:
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
 
-        for ticker in tickers:
+        for index, ticker in enumerate(tickers, start=1):
             try:
                 state = self.store.get_symbol(ticker.symbol)
                 new_trades = self._update_cvd(ticker.symbol, state)
@@ -137,6 +139,9 @@ class PumpExhaustionScanner:
             except Exception as error:
                 failed_symbols += 1
                 print(f"{ticker.symbol}: pump scan failed: {error}")
+            finally:
+                if progress_callback is not None and (index % 10 == 0 or index == len(tickers)):
+                    progress_callback(index, len(tickers))
 
         self.store.save()
         return PumpScanResult(

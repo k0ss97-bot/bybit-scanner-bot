@@ -103,9 +103,11 @@ class LongScanner:
         self.base_cache: dict[str, BaseCacheEntry] = {}
         self.last_spot_cvd_update_ts: dict[str, int] = {}
 
-    def scan_once(self) -> ScanResult:
+    def scan_once(self, progress_callback=None) -> ScanResult:
         now = int(time.time())
         tickers = self._select_tickers()
+        if progress_callback is not None:
+            progress_callback(0, len(tickers))
         binance_tickers = self._get_binance_tickers()
         signals = []
         watchlist_alerts = []
@@ -113,7 +115,7 @@ class LongScanner:
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
 
-        for ticker in tickers:
+        for index, ticker in enumerate(tickers, start=1):
             try:
                 state = self.store.get_symbol(ticker.symbol)
                 new_trades = self._update_cvd(ticker.symbol, state)
@@ -156,6 +158,9 @@ class LongScanner:
             except Exception as error:
                 failed_symbols += 1
                 print(f"{ticker.symbol}: scan failed: {error}")
+            finally:
+                if progress_callback is not None and (index % 10 == 0 or index == len(tickers)):
+                    progress_callback(index, len(tickers))
 
         self.store.save()
         return ScanResult(

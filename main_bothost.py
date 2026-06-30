@@ -62,6 +62,7 @@ def format_rejections(rejection_reasons: dict[str, int], limit: int = 5) -> str:
 def update_status(scanner: str, result, reviewed: int) -> None:
     with STATUS_LOCK:
         SCANNER_STATUS[scanner] = {
+            "stage": "done",
             "updated_ts": int(time.time()),
             "symbols": result.scanned_symbols,
             "signals": len(result.signals),
@@ -69,6 +70,18 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "failed": result.failed_symbols,
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
+        }
+
+
+def update_scanning_status(scanner: str, current: int | None = None, total: int | None = None) -> None:
+    with STATUS_LOCK:
+        previous = SCANNER_STATUS.get(scanner, {})
+        SCANNER_STATUS[scanner] = {
+            **previous,
+            "stage": "scanning",
+            "started_ts": previous.get("started_ts", int(time.time())),
+            "current": current if current is not None else previous.get("current", 0),
+            "total": total if total is not None else previous.get("total", 0),
         }
 
 
@@ -85,6 +98,18 @@ def format_status_message() -> str:
         data = snapshot.get(scanner)
         if not data:
             lines.append(f"\n{scanner}: еще нет данных")
+            continue
+        if data.get("stage") == "scanning":
+            started_ago = now - int(data.get("started_ts", now))
+            previous_rejections = data.get("rejections", "еще нет")
+            current = int(data.get("current", 0))
+            total = int(data.get("total", 0))
+            progress = f"{current}/{total}" if total else "подготовка"
+            lines.append(
+                "\n"
+                f"{scanner}: скан идет {started_ago}s, прогресс {progress}\n"
+                f"Последние причины отсечения: {previous_rejections}"
+            )
             continue
         ago = now - int(data["updated_ts"])
         lines.append(
@@ -137,7 +162,14 @@ def run_long_loop() -> None:
 
     while True:
         try:
-            result = scanner.scan_once()
+            update_scanning_status("LONG")
+            result = scanner.scan_once(
+                progress_callback=lambda current, total: update_scanning_status(
+                    "LONG",
+                    current,
+                    total,
+                )
+            )
             for signal in result.signals:
                 safe_send_long_signal(notifier, signal)
             reviewed = history.update_signal_reviews()
@@ -177,7 +209,14 @@ def run_pump_loop() -> None:
 
     while True:
         try:
-            result = scanner.scan_once()
+            update_scanning_status("PUMP")
+            result = scanner.scan_once(
+                progress_callback=lambda current, total: update_scanning_status(
+                    "PUMP",
+                    current,
+                    total,
+                )
+            )
             for signal in result.signals:
                 safe_send_message(notifier, format_pump_signal(signal))
             reviewed = history.update_signal_reviews()
