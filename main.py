@@ -7,11 +7,12 @@ import time
 import traceback
 
 from bybit_client import BybitClient
+from binance_client import BinanceClient
 from config import get_settings
 from history import HistoryStore
 from long_scanner import LongScanner
 from state import StateStore
-from telegram import TelegramNotifier
+from telegram import TelegramNotifier, format_long_watchlist
 
 
 def safe_send(notifier: TelegramNotifier, text: str) -> None:
@@ -70,10 +71,22 @@ def build_bybit_client(settings) -> BybitClient:
     )
 
 
+def build_binance_client(settings) -> BinanceClient | None:
+    if not settings.binance_confirm_enabled:
+        return None
+    return BinanceClient(
+        settings.binance_base_url,
+        verify_ssl=settings.verify_ssl,
+        rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
+        max_retries=settings.bybit_max_retries,
+    )
+
+
 def main() -> None:
     args = parse_args()
     settings = get_settings()
     client = build_bybit_client(settings)
+    binance_client = build_binance_client(settings)
     store = StateStore(data_path("state.json"))
     store.load()
 
@@ -82,6 +95,7 @@ def main() -> None:
         store,
         settings,
         HistoryStore(data_path("scanner.db")),
+        binance_client,
     )
     notifier = TelegramNotifier(
         settings.telegram_bot_token if settings.telegram_enabled else "",
@@ -100,6 +114,8 @@ def main() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 notifier.send_signal(signal)
+            for alert in result.watchlist_alerts:
+                safe_send(notifier, format_long_watchlist(alert))
             reviewed = scanner.history.update_signal_reviews() if scanner.history is not None else 0
             print(
                 "Long scan done: "

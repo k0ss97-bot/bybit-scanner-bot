@@ -27,6 +27,8 @@ class SymbolState:
     seen_spot_trade_ids: list[str] = field(default_factory=list)
     snapshots: list[Snapshot] = field(default_factory=list)
     last_alert_ts: int = 0
+    last_alert_score: int = 0
+    last_watchlist_ts: int = 0
     consecutive_matches: int = 0
 
 
@@ -56,6 +58,8 @@ class StateStore:
                 seen_spot_trade_ids=list(data.get("seen_spot_trade_ids", [])),
                 snapshots=[Snapshot(**snap) for snap in data.get("snapshots", [])],
                 last_alert_ts=int(data.get("last_alert_ts", 0)),
+                last_alert_score=int(data.get("last_alert_score", 0)),
+                last_watchlist_ts=int(data.get("last_watchlist_ts", 0)),
                 consecutive_matches=int(data.get("consecutive_matches", 0)),
             )
 

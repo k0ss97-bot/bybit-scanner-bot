@@ -47,6 +47,10 @@ class Settings:
     bybit_min_request_interval_seconds: float
     bybit_rate_limit_backoff_seconds: float
     bybit_max_retries: int
+    binance_base_url: str
+    binance_confirm_enabled: bool
+    binance_confirmation_required: bool
+    binance_min_quote_volume_24h_usdt: float
     scan_interval_seconds: int
     window_minutes: int
     oi_threshold_pct: float
@@ -68,9 +72,16 @@ class Settings:
     long_min_turnover_ratio_to_base: float
     long_base_cache_minutes: int
     long_min_signal_score: int
+    long_watchlist_min_score: int
     long_min_spot_cvd_change_pct: float
     long_min_spot_trades_for_filter: int
     spot_cvd_update_interval_seconds: int
+    watchlist_enabled: bool
+    watchlist_cooldown_minutes: int
+    watchlist_max_alerts_per_scan: int
+    alert_score_improvement: int
+    status_commands_enabled: bool
+    status_poll_interval_seconds: int
     pump_scan_interval_seconds: int
     pump_window_minutes: int
     pump_lookback_days: int
@@ -83,8 +94,11 @@ class Settings:
     pump_max_price_change_window_pct: float
     pump_min_turnover_24h_usdt: float
     pump_max_symbols: int
+    pump_min_signal_score: int
+    pump_watchlist_min_score: int
     pump_consecutive_checks: int
     pump_alert_cooldown_minutes: int
+    pump_alert_score_improvement: int
     startup_notifications: bool
 
 
@@ -105,6 +119,10 @@ def get_settings() -> Settings:
         bybit_min_request_interval_seconds=_float("BYBIT_MIN_REQUEST_INTERVAL_SECONDS", 0.35),
         bybit_rate_limit_backoff_seconds=_float("BYBIT_RATE_LIMIT_BACKOFF_SECONDS", 3),
         bybit_max_retries=_int("BYBIT_MAX_RETRIES", 2),
+        binance_base_url=os.getenv("BINANCE_BASE_URL", "https://fapi.binance.com"),
+        binance_confirm_enabled=_bool("BINANCE_CONFIRM_ENABLED", False),
+        binance_confirmation_required=_bool("BINANCE_CONFIRMATION_REQUIRED", False),
+        binance_min_quote_volume_24h_usdt=_float("BINANCE_MIN_QUOTE_VOLUME_24H_USDT", 10000000),
         scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 60),
         window_minutes=_int("WINDOW_MINUTES", 15),
         oi_threshold_pct=_float("OI_THRESHOLD_PCT", 10),
@@ -126,9 +144,16 @@ def get_settings() -> Settings:
         long_min_turnover_ratio_to_base=_float("LONG_MIN_TURNOVER_RATIO_TO_BASE", 2),
         long_base_cache_minutes=_int("LONG_BASE_CACHE_MINUTES", 15),
         long_min_signal_score=_int("LONG_MIN_SIGNAL_SCORE", 5),
+        long_watchlist_min_score=_int("LONG_WATCHLIST_MIN_SCORE", 4),
         long_min_spot_cvd_change_pct=_float("LONG_MIN_SPOT_CVD_CHANGE_PCT", -5),
         long_min_spot_trades_for_filter=_int("LONG_MIN_SPOT_TRADES_FOR_FILTER", 20),
         spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
+        watchlist_enabled=_bool("WATCHLIST_ENABLED", True),
+        watchlist_cooldown_minutes=_int("WATCHLIST_COOLDOWN_MINUTES", 120),
+        watchlist_max_alerts_per_scan=_int("WATCHLIST_MAX_ALERTS_PER_SCAN", 3),
+        alert_score_improvement=_int("ALERT_SCORE_IMPROVEMENT", 2),
+        status_commands_enabled=_bool("STATUS_COMMANDS_ENABLED", True),
+        status_poll_interval_seconds=_int("STATUS_POLL_INTERVAL_SECONDS", 5),
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
         pump_window_minutes=_int("PUMP_WINDOW_MINUTES", 15),
         pump_lookback_days=_int("PUMP_LOOKBACK_DAYS", 2),
@@ -141,7 +166,10 @@ def get_settings() -> Settings:
         pump_max_price_change_window_pct=_float("PUMP_MAX_PRICE_CHANGE_WINDOW_PCT", 0),
         pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 2000000),
         pump_max_symbols=_int("PUMP_MAX_SYMBOLS", 100),
+        pump_min_signal_score=_int("PUMP_MIN_SIGNAL_SCORE", 6),
+        pump_watchlist_min_score=_int("PUMP_WATCHLIST_MIN_SCORE", 5),
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 2),
         pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 60),
+        pump_alert_score_improvement=_int("PUMP_ALERT_SCORE_IMPROVEMENT", 2),
         startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
     )

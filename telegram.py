@@ -5,8 +5,8 @@ import ssl
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from long_scanner import LongSignal
-from pump_exhaustion_scanner import PumpExhaustionSignal
+from long_scanner import LongSignal, LongWatchlistAlert
+from pump_exhaustion_scanner import PumpExhaustionSignal, PumpWatchlistAlert
 
 
 class TelegramNotifier:
@@ -34,22 +34,38 @@ class TelegramNotifier:
             print(text)
             return
 
+        self._post("sendMessage", {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        })
+
+    def get_updates(self, offset: int | None = None, timeout_seconds: int = 20) -> list[dict]:
+        if not self.enabled:
+            return []
+
+        payload = {
+            "timeout": timeout_seconds,
+            "allowed_updates": ["message"],
+        }
+        if offset is not None:
+            payload["offset"] = offset
+        response = self._post("getUpdates", payload)
+        return list(response.get("result", []))
+
+    def _post(self, method: str, payload: dict) -> dict:
         payload = json.dumps(
-            {
-                "chat_id": self.chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            }
+            payload
         ).encode("utf-8")
         request = Request(
-            f"https://api.telegram.org/bot{self.token}/sendMessage",
+            f"https://api.telegram.org/bot{self.token}/{method}",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds, context=self.ssl_context):
-                return
+            with urlopen(request, timeout=self.timeout_seconds, context=self.ssl_context) as response:
+                return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Telegram error {error.code}: {body}") from error
@@ -89,6 +105,7 @@ def format_pump_signal(signal: PumpExhaustionSignal) -> str:
         f"Монета: {signal.symbol}\n"
         f"График: https://www.bybit.com/trade/usdt/{signal.symbol}\n"
         f"Окно слабости: {signal.window_minutes}m\n\n"
+        f"Сила сигнала: {signal.signal_score}/10\n"
         f"Рост за {signal.lookback_days}d: {signal.price_growth_lookback_pct:+.2f}%\n"
         f"Откат от high разгона: {signal.drawdown_from_high_pct:.2f}%\n"
         f"OI за окно: {signal.oi_change_pct:+.2f}%\n"
@@ -106,4 +123,45 @@ def format_pump_signal(signal: PumpExhaustionSignal) -> str:
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
         "Причина: монета сильно росла 1-2 дня, откатилась от хая, OI стоит/падает, futures CVD уходит в минус. Возможное распределение / long trap."
+    )
+
+
+def format_long_watchlist(alert: LongWatchlistAlert) -> str:
+    return (
+        "🟡 LONG WATCHLIST\n\n"
+        f"Монета: {alert.symbol}\n"
+        f"График: https://www.bybit.com/trade/usdt/{alert.symbol}\n"
+        f"Окно: {alert.window_minutes}m\n"
+        f"Сила: {alert.signal_score}/10\n\n"
+        f"OI: {alert.oi_change_pct:+.2f}%\n"
+        f"Futures CVD: {alert.cvd_change_pct:+.2f}%\n"
+        f"Futures CVD delta: {alert.cvd_delta_usdt:,.0f} USDT\n"
+        f"Spot CVD: {alert.spot_cvd_change_pct:+.2f}%\n"
+        f"Price: {alert.price_change_pct:+.2f}%\n"
+        f"Оборот к базе: x{alert.turnover_ratio_to_base:.2f}\n"
+        f"Last price: {alert.price:g}\n"
+        f"Turnover 24h: {alert.turnover_24h:,.0f} USDT\n\n"
+        f"Прошло: {', '.join(alert.passed_checks)}\n"
+        f"Не хватает: {', '.join(alert.missing_checks)}"
+    )
+
+
+def format_pump_watchlist(alert: PumpWatchlistAlert) -> str:
+    return (
+        "🟠 PUMP WATCHLIST\n\n"
+        f"Монета: {alert.symbol}\n"
+        f"График: https://www.bybit.com/trade/usdt/{alert.symbol}\n"
+        f"Окно слабости: {alert.window_minutes}m\n"
+        f"Сила: {alert.signal_score}/10\n\n"
+        f"Рост за {alert.lookback_days}d: {alert.price_growth_lookback_pct:+.2f}%\n"
+        f"Откат от high: {alert.drawdown_from_high_pct:+.2f}%\n"
+        f"OI за окно: {alert.oi_change_pct:+.2f}%\n"
+        f"Требуемое падение OI: -{alert.required_oi_drop_pct:.2f}%\n"
+        f"Futures CVD: {alert.cvd_change_pct:+.2f}%\n"
+        f"Futures CVD delta: {alert.cvd_delta_usdt:,.0f} USDT\n"
+        f"Price за окно: {alert.price_change_window_pct:+.2f}%\n"
+        f"Last price: {alert.price:g}\n"
+        f"Turnover 24h: {alert.turnover_24h:,.0f} USDT\n\n"
+        f"Прошло: {', '.join(alert.passed_checks)}\n"
+        f"Не хватает: {', '.join(alert.missing_checks)}"
     )

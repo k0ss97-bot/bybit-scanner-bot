@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import time
+from typing import TYPE_CHECKING
 
 from bybit_client import BybitClient, Ticker
 from config import Settings
 from history import HistoryStore
 from state import Snapshot, StateStore, SymbolState
+
+if TYPE_CHECKING:
+    from binance_client import BinanceClient, BinanceTicker
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,23 @@ class LongSignal:
 
 
 @dataclass(frozen=True)
+class LongWatchlistAlert:
+    symbol: str
+    window_minutes: int
+    signal_score: int
+    passed_checks: list[str]
+    missing_checks: list[str]
+    oi_change_pct: float
+    cvd_change_pct: float
+    cvd_delta_usdt: float
+    spot_cvd_change_pct: float
+    price_change_pct: float
+    turnover_ratio_to_base: float
+    price: float
+    turnover_24h: float
+
+
+@dataclass(frozen=True)
 class BaseStructure:
     lookback_days: int
     base_growth_pct: float
@@ -57,6 +78,7 @@ class BaseCacheEntry:
 @dataclass(frozen=True)
 class ScanResult:
     signals: list[LongSignal]
+    watchlist_alerts: list[LongWatchlistAlert]
     scanned_symbols: int
     failed_symbols: int
     skipped_symbols: int
@@ -70,11 +92,13 @@ class LongScanner:
         store: StateStore,
         settings: Settings,
         history: HistoryStore | None = None,
+        binance_client: BinanceClient | None = None,
     ) -> None:
         self.client = client
         self.store = store
         self.settings = settings
         self.history = history
+        self.binance_client = binance_client
         self.no_spot_symbols: set[str] = set()
         self.base_cache: dict[str, BaseCacheEntry] = {}
         self.last_spot_cvd_update_ts: dict[str, int] = {}
@@ -82,7 +106,9 @@ class LongScanner:
     def scan_once(self) -> ScanResult:
         now = int(time.time())
         tickers = self._select_tickers()
+        binance_tickers = self._get_binance_tickers()
         signals = []
+        watchlist_alerts = []
         failed_symbols = 0
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
@@ -94,9 +120,16 @@ class LongScanner:
                 new_spot_trades = self._update_spot_cvd(ticker.symbol, state)
                 self._add_snapshot(now, ticker, state, new_trades, new_spot_trades)
 
-                signal = self._build_signal(now, ticker, state, rejection_reasons)
+                signal, watchlist_alert = self._build_signal(
+                    now,
+                    ticker,
+                    state,
+                    rejection_reasons,
+                    binance_tickers.get(ticker.symbol),
+                )
                 if signal is not None:
                     state.last_alert_ts = now
+                    state.last_alert_score = signal.signal_score
                     if self.history is not None:
                         self.history.record_signal(
                             signal_type="long",
@@ -112,6 +145,12 @@ class LongScanner:
                             payload=str(signal),
                         )
                     signals.append(signal)
+                elif (
+                    watchlist_alert is not None
+                    and len(watchlist_alerts) < self.settings.watchlist_max_alerts_per_scan
+                ):
+                    state.last_watchlist_ts = now
+                    watchlist_alerts.append(watchlist_alert)
                 else:
                     skipped_symbols += 1
             except Exception as error:
@@ -121,6 +160,7 @@ class LongScanner:
         self.store.save()
         return ScanResult(
             signals=signals,
+            watchlist_alerts=watchlist_alerts,
             scanned_symbols=len(tickers),
             failed_symbols=failed_symbols,
             skipped_symbols=skipped_symbols,
@@ -136,6 +176,15 @@ class LongScanner:
         ]
         tickers.sort(key=lambda item: item.turnover_24h, reverse=True)
         return tickers[: self.settings.max_symbols]
+
+    def _get_binance_tickers(self) -> dict[str, BinanceTicker]:
+        if not self.settings.binance_confirm_enabled or self.binance_client is None:
+            return {}
+        try:
+            return self.binance_client.get_usdt_perp_tickers()
+        except Exception as error:
+            print(f"Binance confirmation unavailable: {error}", flush=True)
+            return {}
 
     def _update_cvd(self, symbol: str, state: SymbolState) -> int:
         seen = set(state.seen_trade_ids)
@@ -226,17 +275,14 @@ class LongScanner:
         ticker: Ticker,
         state: SymbolState,
         rejection_reasons: dict[str, int],
-    ) -> LongSignal | None:
-        if now - state.last_alert_ts < self.settings.alert_cooldown_minutes * 60:
-            count_reason(rejection_reasons, "cooldown")
-            return None
-
+        binance_ticker: BinanceTicker | None,
+    ) -> tuple[LongSignal | None, LongWatchlistAlert | None]:
         current = state.snapshots[-1]
         previous = self._find_window_snapshot(current.ts, state)
         if previous is None:
             state.consecutive_matches = 0
             count_reason(rejection_reasons, "warmup_no_window")
-            return None
+            return None, None
 
         oi_change_pct = pct_change(previous.oi, current.oi)
         cvd_delta = current.cvd - previous.cvd
@@ -248,7 +294,7 @@ class LongScanner:
         if base_structure is None:
             state.consecutive_matches = 0
             count_reason(rejection_reasons, "no_base_structure")
-            return None
+            return None, None
 
         signal_score = self._score_signal(
             oi_change_pct=oi_change_pct,
@@ -280,6 +326,14 @@ class LongScanner:
                 not self.settings.require_price_hold
                 or price_change_pct >= self.settings.price_min_change_pct
             ),
+            "binance_volume": (
+                not self.settings.binance_confirmation_required
+                or (
+                    binance_ticker is not None
+                    and binance_ticker.quote_volume_24h
+                    >= self.settings.binance_min_quote_volume_24h_usdt
+                )
+            ),
         }
 
         if not all(checks.values()):
@@ -287,12 +341,43 @@ class LongScanner:
             for reason, passed in checks.items():
                 if not passed:
                     count_reason(rejection_reasons, reason)
-            return None
+            return None, self._build_watchlist_alert(
+                now=now,
+                ticker=ticker,
+                state=state,
+                signal_score=signal_score,
+                checks=checks,
+                oi_change_pct=oi_change_pct,
+                cvd_change_pct=cvd_change_pct,
+                cvd_delta=cvd_delta,
+                spot_cvd_change_pct=spot_cvd_change_pct,
+                price_change_pct=price_change_pct,
+                turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+            )
+
+        if (
+            now - state.last_alert_ts < self.settings.alert_cooldown_minutes * 60
+            and signal_score < state.last_alert_score + self.settings.alert_score_improvement
+        ):
+            count_reason(rejection_reasons, "cooldown")
+            return None, None
 
         state.consecutive_matches += 1
         if state.consecutive_matches < self.settings.consecutive_checks:
             count_reason(rejection_reasons, "confirmations_waiting")
-            return None
+            return None, self._build_watchlist_alert(
+                now=now,
+                ticker=ticker,
+                state=state,
+                signal_score=signal_score,
+                checks=checks,
+                oi_change_pct=oi_change_pct,
+                cvd_change_pct=cvd_change_pct,
+                cvd_delta=cvd_delta,
+                spot_cvd_change_pct=spot_cvd_change_pct,
+                price_change_pct=price_change_pct,
+                turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+            )
 
         return LongSignal(
             symbol=ticker.symbol,
@@ -316,6 +401,49 @@ class LongScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+        ), None
+
+    def _build_watchlist_alert(
+        self,
+        *,
+        now: int,
+        ticker: Ticker,
+        state: SymbolState,
+        signal_score: int,
+        checks: dict[str, bool],
+        oi_change_pct: float,
+        cvd_change_pct: float,
+        cvd_delta: float,
+        spot_cvd_change_pct: float,
+        price_change_pct: float,
+        turnover_ratio_to_base: float,
+    ) -> LongWatchlistAlert | None:
+        if not self.settings.watchlist_enabled:
+            return None
+        if signal_score < self.settings.long_watchlist_min_score:
+            return None
+        if now - state.last_watchlist_ts < self.settings.watchlist_cooldown_minutes * 60:
+            return None
+
+        passed_checks = [name for name, passed in checks.items() if passed]
+        missing_checks = [name for name, passed in checks.items() if not passed]
+        if len(passed_checks) < 5:
+            return None
+
+        return LongWatchlistAlert(
+            symbol=ticker.symbol,
+            window_minutes=self.settings.window_minutes,
+            signal_score=signal_score,
+            passed_checks=passed_checks,
+            missing_checks=missing_checks,
+            oi_change_pct=oi_change_pct,
+            cvd_change_pct=cvd_change_pct,
+            cvd_delta_usdt=cvd_delta,
+            spot_cvd_change_pct=spot_cvd_change_pct,
+            price_change_pct=price_change_pct,
+            turnover_ratio_to_base=turnover_ratio_to_base,
+            price=ticker.price,
+            turnover_24h=ticker.turnover_24h,
         )
 
     def _get_base_structure(self, ticker: Ticker) -> BaseStructure | None:

@@ -7,11 +7,12 @@ import time
 import traceback
 
 from bybit_client import BybitClient
+from binance_client import BinanceClient
 from config import get_settings
 from history import HistoryStore
 from pump_exhaustion_scanner import PumpExhaustionScanner
 from state import StateStore
-from telegram import TelegramNotifier, format_pump_signal
+from telegram import TelegramNotifier, format_pump_signal, format_pump_watchlist
 
 
 def safe_send(notifier: TelegramNotifier, text: str) -> None:
@@ -65,6 +66,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def build_binance_client(settings) -> BinanceClient | None:
+    if not settings.binance_confirm_enabled:
+        return None
+    return BinanceClient(
+        settings.binance_base_url,
+        verify_ssl=settings.verify_ssl,
+        rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
+        max_retries=settings.bybit_max_retries,
+    )
+
+
 def main() -> None:
     args = parse_args()
     settings = get_settings()
@@ -75,6 +87,7 @@ def main() -> None:
         rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
         max_retries=settings.bybit_max_retries,
     )
+    binance_client = build_binance_client(settings)
     store = StateStore(data_path("pump_state.json"))
     store.load()
 
@@ -83,6 +96,7 @@ def main() -> None:
         store,
         settings,
         HistoryStore(data_path("scanner.db")),
+        binance_client,
     )
     notifier = TelegramNotifier(
         settings.telegram_bot_token if settings.telegram_enabled else "",
@@ -101,6 +115,8 @@ def main() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send(notifier, format_pump_signal(signal))
+            for alert in result.watchlist_alerts:
+                safe_send(notifier, format_pump_watchlist(alert))
             print(
                 "Pump scan done: "
                 f"symbols={result.scanned_symbols}, "
