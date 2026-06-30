@@ -26,7 +26,8 @@ def menu_keyboard() -> dict:
     return {
         "keyboard": [
             [{"text": "📊 Статус"}, {"text": "⚙️ Настройки"}],
-            [{"text": "📈 Статистика"}],
+            [{"text": "📈 Статистика"}, {"text": "❓ Почему нет сигналов"}],
+            [{"text": "🕘 Последние сигналы"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -85,6 +86,7 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "failed": result.failed_symbols,
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
+            "rejection_reasons": dict(result.rejection_reasons),
         }
 
 
@@ -215,6 +217,50 @@ def format_stats_message(history: HistoryStore) -> str:
     return "\n".join(lines)
 
 
+def format_rejection_details_message() -> str:
+    with STATUS_LOCK:
+        snapshot = dict(SCANNER_STATUS)
+
+    if not snapshot:
+        return "Пока нет данных. Дождись завершения первого скана."
+
+    lines = ["Почему нет сигналов:"]
+    for scanner in ("LONG", "PUMP"):
+        data = snapshot.get(scanner)
+        if not data:
+            lines.append(f"\n{scanner}: еще нет данных")
+            continue
+
+        reasons = data.get("rejection_reasons")
+        if isinstance(reasons, dict) and reasons:
+            items = sorted(reasons.items(), key=lambda item: item[1], reverse=True)
+            lines.append(f"\n{scanner}:")
+            for reason, count in items[:10]:
+                lines.append(f"{reason}: {count}")
+            continue
+
+        text_reasons = str(data.get("rejections", "none"))
+        lines.append(f"\n{scanner}: {text_reasons}")
+
+    return "\n".join(lines)
+
+
+def format_recent_signals_message(history: HistoryStore, limit: int = 10) -> str:
+    recent = history.get_recent_signals(limit=limit)
+    if not recent:
+        return "Пока нет сигналов."
+
+    now = int(time.time())
+    lines = [f"Последние {len(recent)} сигналов:"]
+    for signal_id, signal_type, symbol, ts, price, price_change_pct in recent:
+        age_minutes = int((now - ts) / 60)
+        lines.append(
+            f"#{signal_id} {signal_type} {symbol}: "
+            f"цена={price:g}, окно={price_change_pct:+.2f}%, возраст={age_minutes}m"
+        )
+    return "\n".join(lines)
+
+
 def is_status_request(text: str) -> bool:
     return text.startswith("/status") or text in {"статус", "📊 статус"}
 
@@ -225,6 +271,29 @@ def is_settings_request(text: str) -> bool:
 
 def is_stats_request(text: str) -> bool:
     return text.startswith("/stats") or text in {"статистика", "📈 статистика"}
+
+
+def is_rejections_request(text: str) -> bool:
+    return (
+        text.startswith("/why")
+        or text in {
+            "почему нет сигналов",
+            "❓ почему нет сигналов",
+            "нет сигналов",
+            "почему",
+        }
+    )
+
+
+def is_recent_signals_request(text: str) -> bool:
+    return (
+        text.startswith("/last")
+        or text in {
+            "последние сигналы",
+            "🕘 последние сигналы",
+            "последние",
+        }
+    )
 
 
 def is_menu_request(text: str) -> bool:
@@ -255,10 +324,24 @@ def run_status_loop() -> None:
                     safe_send_message(notifier, format_settings_message(settings), menu_keyboard())
                 elif is_stats_request(text):
                     safe_send_message(notifier, format_stats_message(history), menu_keyboard())
+                elif is_rejections_request(text):
+                    safe_send_message(notifier, format_rejection_details_message(), menu_keyboard())
+                elif is_recent_signals_request(text):
+                    safe_send_message(
+                        notifier,
+                        format_recent_signals_message(history),
+                        menu_keyboard(),
+                    )
                 elif is_menu_request(text):
                     safe_send_message(
                         notifier,
                         "Кнопки включены. Выбери действие ниже.",
+                        menu_keyboard(),
+                    )
+                else:
+                    safe_send_message(
+                        notifier,
+                        "Не понял команду. Выбери действие кнопкой ниже.",
                         menu_keyboard(),
                     )
         except Exception as error:
