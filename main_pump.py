@@ -60,7 +60,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     settings = get_settings()
-    client = BybitClient(settings.bybit_base_url, verify_ssl=settings.verify_ssl)
+    client = BybitClient(
+        settings.bybit_base_url,
+        verify_ssl=settings.verify_ssl,
+        min_request_interval_seconds=settings.bybit_min_request_interval_seconds,
+        rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
+        max_retries=settings.bybit_max_retries,
+    )
     store = StateStore(data_path("pump_state.json"))
     store.load()
 
@@ -77,7 +83,8 @@ def main() -> None:
         verify_ssl=settings.verify_ssl,
     )
 
-    safe_send(notifier, build_start_message(settings))
+    if args.test_telegram or settings.startup_notifications:
+        safe_send(notifier, build_start_message(settings))
     if args.test_telegram:
         return
 

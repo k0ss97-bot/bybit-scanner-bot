@@ -86,6 +86,7 @@ class Settings:
     pump_min_new_trades: int
     pump_consecutive_checks: int
     pump_alert_cooldown_minutes: int
+    startup_notifications: bool
 
 
 def get_settings() -> Settings:
@@ -144,4 +145,5 @@ def get_settings() -> Settings:
         pump_min_new_trades=_int("PUMP_MIN_NEW_TRADES", 50),
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 2),
         pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 60),
+        startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
     )

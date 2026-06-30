@@ -57,7 +57,8 @@ def run_long_loop() -> None:
     scanner.store.load()
     notifier = build_notifier(settings)
 
-    safe_send_message(notifier, "Bothost: LONG scanner запущен.")
+    if settings.startup_notifications:
+        safe_send_message(notifier, "Bothost: LONG scanner запущен.")
 
     while True:
         try:
@@ -95,7 +96,8 @@ def run_pump_loop() -> None:
     scanner.store.load()
     notifier = build_notifier(settings)
 
-    safe_send_message(notifier, "Bothost: PUMP scanner запущен.")
+    if settings.startup_notifications:
+        safe_send_message(notifier, "Bothost: PUMP scanner запущен.")
 
     while True:
         try:

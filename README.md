@@ -2,7 +2,7 @@
 
 В проекте два отдельных сканера:
 
-- `main.py` — Bothost entrypoint, запускает оба сканера;
+- `main.py` — LONG scanner;
 - `main_pump.py` — pump exhaustion scanner.
 - `main_bothost.py` — оба сканера в одном процессе для хостингов вроде Bothost.
 
@@ -83,6 +83,7 @@ python main_bothost.py
 
 ```bash
 python main.py --test-telegram
+python main_pump.py --test-telegram
 ```
 
 Сделать один скан и остановиться:
@@ -119,11 +120,14 @@ LONG_MIN_SPOT_TRADES_FOR_FILTER=20
 VERIFY_SSL=true
 DEBUG_ERRORS=false
 TELEGRAM_ENABLED=true
+STARTUP_NOTIFICATIONS=false
 BYBIT_MIN_REQUEST_INTERVAL_SECONDS=0.35
 BYBIT_RATE_LIMIT_BACKOFF_SECONDS=3
 BYBIT_MAX_RETRIES=2
 SPOT_CVD_UPDATE_INTERVAL_SECONDS=300
 ```
+
+`STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 
 Настройки pump exhaustion scanner:
 
