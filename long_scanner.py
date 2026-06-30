@@ -17,6 +17,9 @@ class LongSignal:
     base_growth_pct: float
     current_from_base_pct: float
     base_high_price: float
+    base_avg_turnover: float
+    turnover_ratio_to_base: float
+    signal_score: int
     oi_change_pct: float
     cvd_change_pct: float
     cvd_delta_usdt: float
@@ -37,6 +40,8 @@ class BaseStructure:
     base_growth_pct: float
     current_from_base_pct: float
     base_high_price: float
+    base_avg_turnover: float
+    turnover_ratio_to_base: float
 
 
 @dataclass(frozen=True)
@@ -227,6 +232,8 @@ class LongScanner:
             and current.new_trades >= self.settings.min_new_trades
             and base_structure.base_growth_pct
             <= self.settings.long_max_price_growth_lookback_pct
+            and base_structure.turnover_ratio_to_base
+            >= self.settings.long_min_turnover_ratio_to_base
             and price_change_pct <= self.settings.long_max_price_change_window_pct
             and (
                 not self.settings.require_price_hold
@@ -249,6 +256,16 @@ class LongScanner:
             base_growth_pct=base_structure.base_growth_pct,
             current_from_base_pct=base_structure.current_from_base_pct,
             base_high_price=base_structure.base_high_price,
+            base_avg_turnover=base_structure.base_avg_turnover,
+            turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+            signal_score=self._score_signal(
+                oi_change_pct=oi_change_pct,
+                cvd_change_pct=cvd_change_pct,
+                cvd_delta=cvd_delta,
+                spot_cvd_change_pct=spot_cvd_change_pct,
+                price_change_pct=price_change_pct,
+                base_structure=base_structure,
+            ),
             oi_change_pct=oi_change_pct,
             cvd_change_pct=cvd_change_pct,
             cvd_delta_usdt=cvd_delta,
@@ -276,12 +293,53 @@ class LongScanner:
 
         base_open = base_klines[0].open_price
         base_high = max(kline.high_price for kline in base_klines)
+        base_avg_turnover = sum(kline.turnover for kline in base_klines) / len(base_klines)
         return BaseStructure(
             lookback_days=len(base_klines),
             base_growth_pct=pct_change(base_open, base_high),
             current_from_base_pct=pct_change(base_open, ticker.price),
             base_high_price=base_high,
+            base_avg_turnover=base_avg_turnover,
+            turnover_ratio_to_base=safe_ratio(ticker.turnover_24h, base_avg_turnover),
         )
+
+    def _score_signal(
+        self,
+        oi_change_pct: float,
+        cvd_change_pct: float,
+        cvd_delta: float,
+        spot_cvd_change_pct: float,
+        price_change_pct: float,
+        base_structure: BaseStructure,
+    ) -> int:
+        score = 0
+        if base_structure.base_growth_pct <= 10:
+            score += 2
+        elif base_structure.base_growth_pct <= self.settings.long_max_price_growth_lookback_pct:
+            score += 1
+
+        if base_structure.turnover_ratio_to_base >= 5:
+            score += 2
+        elif base_structure.turnover_ratio_to_base >= self.settings.long_min_turnover_ratio_to_base:
+            score += 1
+
+        if oi_change_pct >= self.settings.oi_threshold_pct * 2:
+            score += 2
+        elif oi_change_pct >= self.settings.oi_threshold_pct:
+            score += 1
+
+        if cvd_change_pct >= self.settings.cvd_threshold_pct * 2 and cvd_delta > 0:
+            score += 2
+        elif cvd_change_pct >= self.settings.cvd_threshold_pct and cvd_delta > 0:
+            score += 1
+
+        if spot_cvd_change_pct > 0:
+            score += 1
+
+        if 0 <= price_change_pct <= 10:
+            score += 1
+
+        return min(score, 10)
 
     def _find_window_snapshot(self, now: int, state: SymbolState) -> Snapshot | None:
         target = now - self.settings.window_minutes * 60
@@ -295,3 +353,9 @@ def pct_change(old: float, new: float) -> float:
     if old == 0:
         return 100.0 if new > 0 else 0.0
     return ((new - old) / abs(old)) * 100
+
+
+def safe_ratio(value: float, base: float) -> float:
+    if base <= 0:
+        return 999.0 if value > 0 else 0.0
+    return value / base

@@ -62,6 +62,7 @@ class Settings:
     long_lookback_days: int
     long_max_price_growth_lookback_pct: float
     long_max_price_change_window_pct: float
+    long_min_turnover_ratio_to_base: float
     pump_scan_interval_seconds: int
     pump_window_minutes: int
     pump_lookback_days: int
@@ -111,6 +112,7 @@ def get_settings() -> Settings:
         long_lookback_days=_int("LONG_LOOKBACK_DAYS", 7),
         long_max_price_growth_lookback_pct=_float("LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT", 20),
         long_max_price_change_window_pct=_float("LONG_MAX_PRICE_CHANGE_WINDOW_PCT", 25),
+        long_min_turnover_ratio_to_base=_float("LONG_MIN_TURNOVER_RATIO_TO_BASE", 2),
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
         pump_window_minutes=_int("PUMP_WINDOW_MINUTES", 15),
         pump_lookback_days=_int("PUMP_LOOKBACK_DAYS", 2),
