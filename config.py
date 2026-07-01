@@ -99,6 +99,10 @@ class Settings:
     pump_consecutive_checks: int
     pump_alert_cooldown_minutes: int
     pump_alert_score_improvement: int
+    short_breakdown_enabled: bool
+    short_breakdown_min_oi_growth_pct: float
+    short_breakdown_max_price_change_window_pct: float
+    short_breakdown_min_signal_score: int
     startup_notifications: bool
 
 
@@ -171,5 +175,9 @@ def get_settings() -> Settings:
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 2),
         pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 60),
         pump_alert_score_improvement=_int("PUMP_ALERT_SCORE_IMPROVEMENT", 2),
+        short_breakdown_enabled=_bool("SHORT_BREAKDOWN_ENABLED", True),
+        short_breakdown_min_oi_growth_pct=_float("SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT", 0),
+        short_breakdown_max_price_change_window_pct=_float("SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT", -1),
+        short_breakdown_min_signal_score=_int("SHORT_BREAKDOWN_MIN_SIGNAL_SCORE", 6),
         startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
     )

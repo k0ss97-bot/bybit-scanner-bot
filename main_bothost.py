@@ -11,11 +11,12 @@ from binance_client import BinanceClient
 from config import get_settings
 from history import HistoryStore
 from long_scanner import LongScanner
-from pump_exhaustion_scanner import PumpExhaustionScanner
+from pump_exhaustion_scanner import PumpExhaustionScanner, ShortBreakdownSignal
 from state import StateStore
 from telegram import (
     TelegramNotifier,
     format_pump_signal,
+    format_short_breakdown_signal,
 )
 
 STATUS_LOCK = threading.Lock()
@@ -236,7 +237,11 @@ def format_settings_message(settings) -> str:
         f"PUMP_MIN_TURNOVER_24H_USDT={settings.pump_min_turnover_24h_usdt:g}\n"
         f"PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.pump_min_price_growth_lookback_pct:g}\n"
         f"PUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.pump_min_drawdown_from_high_pct:g}\n"
-        f"PUMP_MIN_SIGNAL_SCORE={settings.pump_min_signal_score}\n\n"
+        f"PUMP_MIN_SIGNAL_SCORE={settings.pump_min_signal_score}\n"
+        f"SHORT_BREAKDOWN_ENABLED={str(settings.short_breakdown_enabled).lower()}\n"
+        f"SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT={settings.short_breakdown_min_oi_growth_pct:g}\n"
+        f"SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_breakdown_max_price_change_window_pct:g}\n"
+        f"SHORT_BREAKDOWN_MIN_SIGNAL_SCORE={settings.short_breakdown_min_signal_score}\n\n"
         "Фильтры:\n"
         f"BINANCE_CONFIRM_ENABLED={str(settings.binance_confirm_enabled).lower()}\n"
         f"BINANCE_CONFIRMATION_REQUIRED={str(settings.binance_confirmation_required).lower()}\n"
@@ -609,7 +614,10 @@ def run_pump_loop() -> None:
                 )
             )
             for signal in result.signals:
-                safe_send_message(notifier, format_pump_signal(signal))
+                if isinstance(signal, ShortBreakdownSignal):
+                    safe_send_message(notifier, format_short_breakdown_signal(signal))
+                else:
+                    safe_send_message(notifier, format_pump_signal(signal))
             reviewed = history.update_signal_reviews()
             update_status("PUMP", result, reviewed)
             maybe_send_rate_warning("PUMP", result.failed_symbols, notifier)
