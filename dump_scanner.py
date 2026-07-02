@@ -433,6 +433,25 @@ class DumpScanner:
         if cooldown_seconds <= 0:
             return True
 
+        if self.history is not None:
+            claimed, previous_source, previous_ts, previous_score = self.history.claim_dump_symbol_alert(
+                symbol=symbol,
+                ts=now,
+                source=self.source,
+                score=signal_score,
+                cooldown_minutes=self.settings.dump_symbol_cooldown_minutes,
+            )
+            if claimed:
+                return True
+            count_reason(rejection_reasons, "symbol_cooldown")
+            age_seconds = now - int(previous_ts or now)
+            print(
+                f"{self.source} {symbol}: skipped by persistent dump cooldown "
+                f"after {previous_source} score={previous_score} age={age_seconds}s",
+                flush=True,
+            )
+            return False
+
         with SYMBOL_ALERT_LOCK:
             previous = SYMBOL_ALERTS.get(symbol)
             if previous is not None:

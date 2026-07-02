@@ -102,6 +102,16 @@ class HistoryStore:
                 ON watchlist_candidates(scanner, ts)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dump_symbol_cooldowns (
+                    symbol TEXT PRIMARY KEY,
+                    ts INTEGER NOT NULL,
+                    source TEXT NOT NULL,
+                    score INTEGER NOT NULL
+                )
+                """
+            )
 
     def record_snapshot(
         self,
@@ -184,6 +194,47 @@ class HistoryStore:
                     payload,
                 ),
             )
+
+    def claim_dump_symbol_alert(
+        self,
+        *,
+        symbol: str,
+        ts: int,
+        source: str,
+        score: int,
+        cooldown_minutes: int,
+    ) -> tuple[bool, str | None, int | None, int | None]:
+        cooldown_seconds = cooldown_minutes * 60
+        if cooldown_seconds <= 0:
+            return True, None, None, None
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            previous = conn.execute(
+                """
+                SELECT ts, source, score
+                FROM dump_symbol_cooldowns
+                WHERE symbol = ?
+                """,
+                (symbol,),
+            ).fetchone()
+            if previous is not None:
+                previous_ts, previous_source, previous_score = previous
+                if ts - int(previous_ts) < cooldown_seconds:
+                    return False, str(previous_source), int(previous_ts), int(previous_score)
+
+            conn.execute(
+                """
+                INSERT INTO dump_symbol_cooldowns (symbol, ts, source, score)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    ts = excluded.ts,
+                    source = excluded.source,
+                    score = excluded.score
+                """,
+                (symbol, ts, source, score),
+            )
+            return True, None, None, None
 
     def update_signal_reviews(
         self,
