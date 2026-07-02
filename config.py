@@ -120,6 +120,7 @@ class Settings:
     dump_consecutive_checks: int
     dump_alert_cooldown_minutes: int
     dump_alert_score_improvement: int
+    dump_symbol_cooldown_minutes: int
     startup_notifications: bool
 
 
@@ -213,5 +214,6 @@ def get_settings() -> Settings:
         dump_consecutive_checks=_int("DUMP_CONSECUTIVE_CHECKS", 1),
         dump_alert_cooldown_minutes=_int("DUMP_ALERT_COOLDOWN_MINUTES", 45),
         dump_alert_score_improvement=_int("DUMP_ALERT_SCORE_IMPROVEMENT", 2),
+        dump_symbol_cooldown_minutes=_int("DUMP_SYMBOL_COOLDOWN_MINUTES", 60),
         startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
     )

@@ -201,6 +201,7 @@ DUMP_MAX_FUNDING_RATE=0.002
 DUMP_MIN_SIGNAL_SCORE=5
 DUMP_WATCHLIST_MIN_SCORE=4
 DUMP_CONSECUTIVE_CHECKS=1
+DUMP_SYMBOL_COOLDOWN_MINUTES=60
 DUMP_ALERT_COOLDOWN_MINUTES=45
 DUMP_ALERT_SCORE_IMPROVEMENT=2
 ```
@@ -213,6 +214,8 @@ Dump-бот запускается отдельно по Bybit и Binance. В н
 ```
 
 Он ищет не идеальный финал пампа, а начало или продолжение слива: до этого был разгон, цена уже откатывается от high, за короткое окно цена падает, а futures CVD показывает продажи. OI используется как усилитель сигнала, но не как жесткая причина отсеять монету.
+
+`DUMP_SYMBOL_COOLDOWN_MINUTES` защищает от дублей: если сигнал по монете уже пришел с Binance, Bybit не отправит такой же dump-сигнал по этой монете до конца cooldown, и наоборот.
 
 Pump-бот ищет структуру:
 

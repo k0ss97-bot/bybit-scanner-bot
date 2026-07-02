@@ -257,6 +257,7 @@ def format_settings_message(settings) -> str:
         f"DUMP_MIN_PRICE_DROP_WINDOW_PCT={settings.dump_min_price_drop_window_pct:g}\n"
         f"DUMP_MIN_NEGATIVE_CVD_DELTA_USDT={settings.dump_min_negative_cvd_delta_usdt:g}\n"
         f"DUMP_MAX_OI_DROP_WINDOW_PCT={settings.dump_max_oi_drop_window_pct:g}\n"
+        f"DUMP_SYMBOL_COOLDOWN_MINUTES={settings.dump_symbol_cooldown_minutes}\n"
         f"DUMP_MIN_SIGNAL_SCORE={settings.dump_min_signal_score}\n\n"
         "Фильтры:\n"
         f"BINANCE_CONFIRM_ENABLED={str(settings.binance_confirm_enabled).lower()}\n"

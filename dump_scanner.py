@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 import time
 from typing import Any
 
@@ -9,6 +10,10 @@ from bybit_client import BybitClient, Ticker
 from config import Settings
 from history import HistoryStore
 from state import Snapshot, StateStore, SymbolState
+
+
+SYMBOL_ALERT_LOCK = threading.Lock()
+SYMBOL_ALERTS: dict[str, tuple[int, str, int]] = {}
 
 
 @dataclass(frozen=True)
@@ -292,6 +297,8 @@ class DumpScanner:
         if state.consecutive_matches < self.settings.dump_consecutive_checks:
             count_reason(rejection_reasons, "confirmations_waiting")
             return None, None
+        if not self._claim_symbol_alert(now, ticker.symbol, signal_score, rejection_reasons):
+            return None, None
 
         return DumpSignal(
             source=self.source,
@@ -414,6 +421,33 @@ class DumpScanner:
 
     def _history_symbol(self, symbol: str) -> str:
         return f"{self.source}:{symbol}"
+
+    def _claim_symbol_alert(
+        self,
+        now: int,
+        symbol: str,
+        signal_score: int,
+        rejection_reasons: dict[str, int],
+    ) -> bool:
+        cooldown_seconds = self.settings.dump_symbol_cooldown_minutes * 60
+        if cooldown_seconds <= 0:
+            return True
+
+        with SYMBOL_ALERT_LOCK:
+            previous = SYMBOL_ALERTS.get(symbol)
+            if previous is not None:
+                previous_ts, previous_source, previous_score = previous
+                if now - previous_ts < cooldown_seconds:
+                    count_reason(rejection_reasons, "symbol_cooldown")
+                    print(
+                        f"{self.source} {symbol}: skipped by shared dump cooldown "
+                        f"after {previous_source} score={previous_score}",
+                        flush=True,
+                    )
+                    return False
+
+            SYMBOL_ALERTS[symbol] = (now, self.source, signal_score)
+            return True
 
 
 def pct_change(old: float, new: float) -> float:
