@@ -77,6 +77,24 @@ SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT=0
 SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT=-0.5
 SHORT_BREAKDOWN_MIN_SIGNAL_SCORE=5
 
+DUMP_ENABLED=true
+DUMP_SCAN_INTERVAL_SECONDS=60
+DUMP_WINDOW_MINUTES=15
+DUMP_LOOKBACK_DAYS=2
+DUMP_MIN_TURNOVER_24H_USDT=2000000
+DUMP_MAX_SYMBOLS=60
+DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=15
+DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=4
+DUMP_MIN_PRICE_DROP_WINDOW_PCT=0.5
+DUMP_MIN_NEGATIVE_CVD_DELTA_USDT=5000
+DUMP_MAX_OI_DROP_WINDOW_PCT=8
+DUMP_MAX_FUNDING_RATE=0.002
+DUMP_MIN_SIGNAL_SCORE=5
+DUMP_WATCHLIST_MIN_SCORE=4
+DUMP_CONSECUTIVE_CHECKS=1
+DUMP_ALERT_COOLDOWN_MINUTES=45
+DUMP_ALERT_SCORE_IMPROVEMENT=2
+
 BYBIT_BASE_URL=https://api.bybit.com
 BINANCE_BASE_URL=https://fapi.binance.com
 BINANCE_CONFIRM_ENABLED=false
@@ -95,11 +113,13 @@ BINANCE_MIN_QUOTE_VOLUME_24H_USDT=10000000
 🕘 Последние сигналы - последние 10 сигналов из базы
 🟢 LONG статус - отдельный статус long-сканера
 🔴 PUMP статус - отдельный статус pump-сканера
+🔻 DUMP BYBIT - отдельный статус скринера слива по Bybit
+🔻 DUMP BINANCE - отдельный статус скринера слива по Binance
 ⏸ Пауза / ▶️ Старт - временно остановить или запустить оба сканера
 ```
 
 Если кнопки не появились, напиши боту `/start` или `меню`.
-Старые команды `/status`, `/status long`, `/status pump`, `/settings`, `/stats`, `/why`, `/last`, `/closest`, `/pause`, `/resume` тоже работают.
+Старые команды `/status`, `/status long`, `/status pump`, `/status dump bybit`, `/status dump binance`, `/settings`, `/stats`, `/why`, `/last`, `/closest`, `/pause`, `/resume` тоже работают.
 
 ## Важно
 

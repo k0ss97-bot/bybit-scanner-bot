@@ -352,7 +352,7 @@ def _review_metrics(
 
     high = max(prices)
     low = min(prices)
-    if signal_type in {"pump", "pump_exhaustion"}:
+    if signal_type in {"pump", "pump_exhaustion", "short_breakdown"} or signal_type.startswith("dump_"):
         move_pct = ((entry_price - price_at_review) / entry_price) * 100
         max_favorable_pct = ((entry_price - low) / entry_price) * 100
         max_adverse_pct = ((high - entry_price) / entry_price) * 100

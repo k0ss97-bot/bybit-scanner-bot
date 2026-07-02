@@ -103,6 +103,23 @@ class Settings:
     short_breakdown_min_oi_growth_pct: float
     short_breakdown_max_price_change_window_pct: float
     short_breakdown_min_signal_score: int
+    dump_enabled: bool
+    dump_window_minutes: int
+    dump_lookback_days: int
+    dump_scan_interval_seconds: int
+    dump_min_turnover_24h_usdt: float
+    dump_max_symbols: int
+    dump_min_price_growth_lookback_pct: float
+    dump_min_drawdown_from_high_pct: float
+    dump_min_price_drop_window_pct: float
+    dump_min_negative_cvd_delta_usdt: float
+    dump_max_oi_drop_window_pct: float
+    dump_max_funding_rate: float
+    dump_min_signal_score: int
+    dump_watchlist_min_score: int
+    dump_consecutive_checks: int
+    dump_alert_cooldown_minutes: int
+    dump_alert_score_improvement: int
     startup_notifications: bool
 
 
@@ -179,5 +196,22 @@ def get_settings() -> Settings:
         short_breakdown_min_oi_growth_pct=_float("SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT", 0),
         short_breakdown_max_price_change_window_pct=_float("SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT", -0.5),
         short_breakdown_min_signal_score=_int("SHORT_BREAKDOWN_MIN_SIGNAL_SCORE", 5),
+        dump_enabled=_bool("DUMP_ENABLED", True),
+        dump_window_minutes=_int("DUMP_WINDOW_MINUTES", 15),
+        dump_lookback_days=_int("DUMP_LOOKBACK_DAYS", 2),
+        dump_scan_interval_seconds=_int("DUMP_SCAN_INTERVAL_SECONDS", 60),
+        dump_min_turnover_24h_usdt=_float("DUMP_MIN_TURNOVER_24H_USDT", 2000000),
+        dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 60),
+        dump_min_price_growth_lookback_pct=_float("DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 15),
+        dump_min_drawdown_from_high_pct=_float("DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 4),
+        dump_min_price_drop_window_pct=_float("DUMP_MIN_PRICE_DROP_WINDOW_PCT", 0.5),
+        dump_min_negative_cvd_delta_usdt=_float("DUMP_MIN_NEGATIVE_CVD_DELTA_USDT", 5000),
+        dump_max_oi_drop_window_pct=_float("DUMP_MAX_OI_DROP_WINDOW_PCT", 8),
+        dump_max_funding_rate=_float("DUMP_MAX_FUNDING_RATE", 0.002),
+        dump_min_signal_score=_int("DUMP_MIN_SIGNAL_SCORE", 5),
+        dump_watchlist_min_score=_int("DUMP_WATCHLIST_MIN_SCORE", 4),
+        dump_consecutive_checks=_int("DUMP_CONSECUTIVE_CHECKS", 1),
+        dump_alert_cooldown_minutes=_int("DUMP_ALERT_COOLDOWN_MINUTES", 45),
+        dump_alert_score_improvement=_int("DUMP_ALERT_SCORE_IMPROVEMENT", 2),
         startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
     )

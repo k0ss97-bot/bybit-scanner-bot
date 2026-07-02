@@ -9,19 +9,22 @@ import traceback
 from bybit_client import BybitClient
 from binance_client import BinanceClient
 from config import get_settings
+from dump_scanner import DumpScanner
 from history import HistoryStore
 from long_scanner import LongScanner
 from pump_exhaustion_scanner import PumpExhaustionScanner, ShortBreakdownSignal
 from state import StateStore
 from telegram import (
     TelegramNotifier,
+    format_dump_signal,
     format_pump_signal,
     format_short_breakdown_signal,
 )
 
 STATUS_LOCK = threading.Lock()
 SCANNER_STATUS: dict[str, dict[str, object]] = {}
-SCANNER_PAUSED = {"LONG": False, "PUMP": False}
+SCANNERS = ("LONG", "PUMP", "DUMP BYBIT", "DUMP BINANCE")
+SCANNER_PAUSED = {scanner: False for scanner in SCANNERS}
 WARNING_LOCK = threading.Lock()
 LAST_WARNING_TS: dict[str, int] = {}
 
@@ -33,6 +36,7 @@ def menu_keyboard() -> dict:
             [{"text": "📈 Статистика"}, {"text": "❓ Почему нет сигналов"}],
             [{"text": "🎯 Ближайшие"}, {"text": "🕘 Последние сигналы"}],
             [{"text": "🟢 LONG статус"}, {"text": "🔴 PUMP статус"}],
+            [{"text": "🔻 DUMP BYBIT"}, {"text": "🔻 DUMP BINANCE"}],
             [{"text": "⏸ Пауза"}, {"text": "▶️ Старт"}],
         ],
         "resize_keyboard": True,
@@ -140,8 +144,10 @@ def format_closest_alerts(alerts, limit: int = 5) -> list[str]:
     lines = []
     for alert in sorted_alerts[:limit]:
         missing = ", ".join(getattr(alert, "missing_checks", [])[:4]) or "none"
+        source = getattr(alert, "source", "")
+        prefix = f"{source} " if source else ""
         lines.append(
-            f"{alert.symbol} score={alert.signal_score}/10 "
+            f"{prefix}{alert.symbol} score={alert.signal_score}/10 "
             f"price={alert.price:g} не хватает: {missing}"
         )
     return lines
@@ -156,7 +162,7 @@ def format_status_message() -> str:
 
     lines = ["Статус сканера:"]
     now = int(time.time())
-    for scanner in ("LONG", "PUMP"):
+    for scanner in SCANNERS:
         data = snapshot.get(scanner)
         if not data:
             lines.append(f"\n{scanner}: еще нет данных")
@@ -242,6 +248,16 @@ def format_settings_message(settings) -> str:
         f"SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT={settings.short_breakdown_min_oi_growth_pct:g}\n"
         f"SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_breakdown_max_price_change_window_pct:g}\n"
         f"SHORT_BREAKDOWN_MIN_SIGNAL_SCORE={settings.short_breakdown_min_signal_score}\n\n"
+        "DUMP:\n"
+        f"DUMP_ENABLED={str(settings.dump_enabled).lower()}\n"
+        f"DUMP_MIN_TURNOVER_24H_USDT={settings.dump_min_turnover_24h_usdt:g}\n"
+        f"DUMP_MAX_SYMBOLS={settings.dump_max_symbols}\n"
+        f"DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.dump_min_price_growth_lookback_pct:g}\n"
+        f"DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.dump_min_drawdown_from_high_pct:g}\n"
+        f"DUMP_MIN_PRICE_DROP_WINDOW_PCT={settings.dump_min_price_drop_window_pct:g}\n"
+        f"DUMP_MIN_NEGATIVE_CVD_DELTA_USDT={settings.dump_min_negative_cvd_delta_usdt:g}\n"
+        f"DUMP_MAX_OI_DROP_WINDOW_PCT={settings.dump_max_oi_drop_window_pct:g}\n"
+        f"DUMP_MIN_SIGNAL_SCORE={settings.dump_min_signal_score}\n\n"
         "Фильтры:\n"
         f"BINANCE_CONFIRM_ENABLED={str(settings.binance_confirm_enabled).lower()}\n"
         f"BINANCE_CONFIRMATION_REQUIRED={str(settings.binance_confirmation_required).lower()}\n"
@@ -304,7 +320,7 @@ def format_rejection_details_message() -> str:
         return "Пока нет данных. Дождись завершения первого скана."
 
     lines = ["Почему нет сигналов:"]
-    for scanner in ("LONG", "PUMP"):
+    for scanner in SCANNERS:
         data = snapshot.get(scanner)
         if not data:
             lines.append(f"\n{scanner}: еще нет данных")
@@ -335,7 +351,7 @@ def format_closest_message(history: HistoryStore) -> str:
 
     lines = ["Ближайшие к сигналу:"]
     has_live = False
-    for scanner in ("LONG", "PUMP"):
+    for scanner in SCANNERS:
         data = snapshot.get(scanner, {})
         closest = data.get("closest", [])
         lines.append(f"\n{scanner}:")
@@ -390,6 +406,12 @@ def status_target(text: str) -> str | None:
         return "LONG"
     if text.startswith("/status pump") or text in {"pump статус", "🔴 pump статус"}:
         return "PUMP"
+    if text.startswith("/status dump bybit") or text in {"dump bybit", "🔻 dump bybit"}:
+        return "DUMP BYBIT"
+    if text.startswith("/status dump binance") or text in {"dump binance", "🔻 dump binance"}:
+        return "DUMP BINANCE"
+    if text.startswith("/status dump"):
+        return "DUMP BINANCE"
     return None
 
 
@@ -639,6 +661,66 @@ def run_pump_loop() -> None:
         time.sleep(settings.pump_scan_interval_seconds)
 
 
+def run_dump_loop(source: str) -> None:
+    settings = get_settings()
+    scanner_name = f"DUMP {source.upper()}"
+    if not settings.dump_enabled:
+        update_paused_status(scanner_name)
+        return
+
+    if source.upper() == "BINANCE":
+        client = build_binance_market_client(settings)
+    else:
+        client = build_bybit_client(settings)
+
+    history = HistoryStore(data_path("scanner.db"))
+    scanner = DumpScanner(
+        source,
+        client,
+        StateStore(data_path(f"dump_{source.lower()}_state.json")),
+        settings,
+        history,
+    )
+    scanner.store.load()
+    notifier = build_notifier(settings)
+
+    while True:
+        if is_paused(scanner_name):
+            update_paused_status(scanner_name)
+            time.sleep(settings.dump_scan_interval_seconds)
+            continue
+        try:
+            update_scanning_status(scanner_name)
+            result = scanner.scan_once(
+                progress_callback=lambda current, total: update_scanning_status(
+                    scanner_name,
+                    current,
+                    total,
+                )
+            )
+            for signal in result.signals:
+                safe_send_message(notifier, format_dump_signal(signal))
+            reviewed = history.update_signal_reviews()
+            update_status(scanner_name, result, reviewed)
+            maybe_send_rate_warning(scanner_name, result.failed_symbols, notifier)
+            print(
+                f"{scanner_name} scan done: "
+                f"symbols={result.scanned_symbols}, "
+                f"signals={len(result.signals)}, "
+                f"failed={result.failed_symbols}, "
+                f"reviews={reviewed}, "
+                f"rejections={format_rejections(result.rejection_reasons)}",
+                flush=True,
+            )
+        except Exception:
+            if settings.debug_errors:
+                traceback.print_exc()
+            else:
+                print(f"{scanner_name} scan error. Set DEBUG_ERRORS=true for details.", flush=True)
+
+        time.sleep(settings.dump_scan_interval_seconds)
+
+
 def main() -> None:
     settings = get_settings()
     print(
@@ -650,12 +732,26 @@ def main() -> None:
     )
     long_thread = threading.Thread(target=run_long_loop, name="long-scanner")
     pump_thread = threading.Thread(target=run_pump_loop, name="pump-scanner")
+    dump_bybit_thread = threading.Thread(
+        target=run_dump_loop,
+        args=("BYBIT",),
+        name="dump-bybit-scanner",
+    )
+    dump_binance_thread = threading.Thread(
+        target=run_dump_loop,
+        args=("BINANCE",),
+        name="dump-binance-scanner",
+    )
     status_thread = threading.Thread(target=run_status_loop, name="status-commands", daemon=True)
     long_thread.start()
     pump_thread.start()
+    dump_bybit_thread.start()
+    dump_binance_thread.start()
     status_thread.start()
     long_thread.join()
     pump_thread.join()
+    dump_bybit_thread.join()
+    dump_binance_thread.join()
 
 
 def build_bybit_client(settings) -> BybitClient:
@@ -671,6 +767,15 @@ def build_bybit_client(settings) -> BybitClient:
 def build_binance_client(settings) -> BinanceClient | None:
     if not settings.binance_confirm_enabled:
         return None
+    return BinanceClient(
+        settings.binance_base_url,
+        verify_ssl=settings.verify_ssl,
+        rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
+        max_retries=settings.bybit_max_retries,
+    )
+
+
+def build_binance_market_client(settings) -> BinanceClient:
     return BinanceClient(
         settings.binance_base_url,
         verify_ssl=settings.verify_ssl,

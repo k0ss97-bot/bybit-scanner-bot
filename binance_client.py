@@ -6,7 +6,10 @@ import ssl
 import time
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlencode
 from urllib.request import urlopen
+
+from bybit_client import Kline, Trade
 
 
 @dataclass(frozen=True)
@@ -14,6 +17,13 @@ class BinanceTicker:
     symbol: str
     price_change_24h_pct: float
     quote_volume_24h: float
+    price: float = 0.0
+    open_interest: float = 0.0
+    funding_rate: float = 0.0
+    turnover_24h: float = 0.0
+    volume_24h: float = 0.0
+    high_price_24h: float = 0.0
+    low_price_24h: float = 0.0
 
 
 class BinanceClient:
@@ -42,11 +52,58 @@ class BinanceClient:
                 symbol=symbol,
                 price_change_24h_pct=_to_float(item.get("priceChangePercent")),
                 quote_volume_24h=_to_float(item.get("quoteVolume")),
+                price=_to_float(item.get("lastPrice")),
+                turnover_24h=_to_float(item.get("quoteVolume")),
+                volume_24h=_to_float(item.get("volume")),
+                high_price_24h=_to_float(item.get("highPrice")),
+                low_price_24h=_to_float(item.get("lowPrice")),
             )
         return tickers
 
-    def _get(self, path: str) -> Any:
-        url = f"{self.base_url}{path}"
+    def get_open_interest(self, symbol: str) -> float:
+        data = self._get("/fapi/v1/openInterest", {"symbol": symbol})
+        return _to_float(data.get("openInterest"))
+
+    def get_recent_trades(self, symbol: str, limit: int = 1000) -> list[Trade]:
+        data = self._get("/fapi/v1/aggTrades", {"symbol": symbol, "limit": limit})
+        trades = []
+        for item in data:
+            is_buyer_maker = bool(item.get("m"))
+            trades.append(
+                Trade(
+                    exec_id=str(item.get("a")),
+                    symbol=symbol,
+                    price=_to_float(item.get("p")),
+                    size=_to_float(item.get("q")),
+                    side="Sell" if is_buyer_maker else "Buy",
+                    time_ms=int(item.get("T", 0)),
+                )
+            )
+        return trades
+
+    def get_daily_klines(self, symbol: str, limit: int = 5) -> list[Kline]:
+        data = self._get(
+            "/fapi/v1/klines",
+            {"symbol": symbol, "interval": "1d", "limit": limit},
+        )
+        klines = []
+        for item in data:
+            klines.append(
+                Kline(
+                    start_ms=int(item[0]),
+                    open_price=_to_float(item[1]),
+                    high_price=_to_float(item[2]),
+                    low_price=_to_float(item[3]),
+                    close_price=_to_float(item[4]),
+                    volume=_to_float(item[5]),
+                    turnover=_to_float(item[7]),
+                )
+            )
+        return sorted(klines, key=lambda item: item.start_ms)
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        query = f"?{urlencode(params)}" if params else ""
+        url = f"{self.base_url}{path}{query}"
         for attempt in range(self.max_retries + 1):
             try:
                 with urlopen(url, timeout=self.timeout_seconds, context=self.ssl_context) as response:

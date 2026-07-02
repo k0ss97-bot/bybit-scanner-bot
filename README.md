@@ -183,6 +183,37 @@ SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT=-0.5
 SHORT_BREAKDOWN_MIN_SIGNAL_SCORE=5
 ```
 
+Настройки отдельного dump trend scanner:
+
+```text
+DUMP_ENABLED=true
+DUMP_SCAN_INTERVAL_SECONDS=60
+DUMP_WINDOW_MINUTES=15
+DUMP_LOOKBACK_DAYS=2
+DUMP_MIN_TURNOVER_24H_USDT=2000000
+DUMP_MAX_SYMBOLS=60
+DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=15
+DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=4
+DUMP_MIN_PRICE_DROP_WINDOW_PCT=0.5
+DUMP_MIN_NEGATIVE_CVD_DELTA_USDT=5000
+DUMP_MAX_OI_DROP_WINDOW_PCT=8
+DUMP_MAX_FUNDING_RATE=0.002
+DUMP_MIN_SIGNAL_SCORE=5
+DUMP_WATCHLIST_MIN_SCORE=4
+DUMP_CONSECUTIVE_CHECKS=1
+DUMP_ALERT_COOLDOWN_MINUTES=45
+DUMP_ALERT_SCORE_IMPROVEMENT=2
+```
+
+Dump-бот запускается отдельно по Bybit и Binance. В начале сообщения будет источник:
+
+```text
+🔻 DUMP TREND | BYBIT
+🔻 DUMP TREND | BINANCE
+```
+
+Он ищет не идеальный финал пампа, а начало или продолжение слива: до этого был разгон, цена уже откатывается от high, за короткое окно цена падает, а futures CVD показывает продажи. OI используется как усилитель сигнала, но не как жесткая причина отсеять монету.
+
 Pump-бот ищет структуру:
 
 ```text

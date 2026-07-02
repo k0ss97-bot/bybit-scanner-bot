@@ -5,6 +5,7 @@ import ssl
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from dump_scanner import DumpSignal
 from long_scanner import LongSignal, LongWatchlistAlert
 from pump_exhaustion_scanner import PumpExhaustionSignal, PumpWatchlistAlert, ShortBreakdownSignal
 
@@ -153,6 +154,34 @@ def format_short_breakdown_signal(signal: ShortBreakdownSignal) -> str:
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
         "Причина: после пампа цена падает, OI растет или не падает, futures CVD отрицательный. Возможен вход новых шортов / breakdown."
+    )
+
+
+def format_dump_signal(signal: DumpSignal) -> str:
+    source = signal.source.upper()
+    chart_url = (
+        f"https://www.binance.com/en/futures/{signal.symbol}"
+        if source == "BINANCE"
+        else f"https://www.bybit.com/trade/usdt/{signal.symbol}"
+    )
+    return (
+        f"🔻 DUMP TREND | {source}\n\n"
+        f"Монета: {signal.symbol}\n"
+        f"График: {chart_url}\n"
+        f"Окно: {signal.window_minutes}m\n\n"
+        f"Сила сигнала: {signal.signal_score}/10\n"
+        f"Рост за {signal.lookback_days}d: {signal.price_growth_lookback_pct:+.2f}%\n"
+        f"Откат от high: {signal.drawdown_from_high_pct:+.2f}%\n"
+        f"Price за окно: {signal.price_change_window_pct:+.2f}%\n"
+        f"Futures CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
+        f"OI за окно: {signal.oi_change_pct:+.2f}%\n"
+        f"Funding: {signal.funding_rate * 100:.4f}%\n"
+        f"Last price: {signal.price:g}\n"
+        f"High разгона: {signal.high_price:g}\n"
+        f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
+        f"New futures trades: {signal.new_trades}\n"
+        f"Confirmations: {signal.consecutive_matches}\n\n"
+        "Причина: после разгона монета начала откатываться от high, цена падает в коротком окне, а поток futures-сделок идет в продажу. Это модель входа в тренд слива."
     )
 
 
