@@ -99,23 +99,23 @@ python main_pump.py --once
 
 ```text
 WINDOW_MINUTES=15
-OI_THRESHOLD_PCT=5
-CVD_THRESHOLD_PCT=5
-MIN_CVD_DELTA_USDT=5000
+OI_THRESHOLD_PCT=1
+CVD_THRESHOLD_PCT=2
+MIN_CVD_DELTA_USDT=3000
 MIN_TURNOVER_24H_USDT=1000000
 MAX_SYMBOLS=200
 ALERT_COOLDOWN_MINUTES=60
-PRICE_MIN_CHANGE_PCT=-1
+PRICE_MIN_CHANGE_PCT=0.3
 REQUIRE_PRICE_HOLD=true
 MIN_NEW_TRADES=50
 CONSECUTIVE_CHECKS=1
 LONG_LOOKBACK_DAYS=7
-LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT=20
+LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT=200
 LONG_MAX_PRICE_CHANGE_WINDOW_PCT=25
-LONG_MIN_TURNOVER_RATIO_TO_BASE=2
+LONG_MIN_TURNOVER_RATIO_TO_BASE=0.8
 LONG_BASE_CACHE_MINUTES=15
-LONG_MIN_SIGNAL_SCORE=5
-LONG_WATCHLIST_MIN_SCORE=4
+LONG_MIN_SIGNAL_SCORE=4
+LONG_WATCHLIST_MIN_SCORE=3
 LONG_MIN_SPOT_CVD_CHANGE_PCT=-5
 LONG_MIN_SPOT_TRADES_FOR_FILTER=20
 VERIFY_SSL=true
@@ -137,6 +137,17 @@ BINANCE_CONFIRMATION_REQUIRED=false
 BINANCE_MIN_QUOTE_VOLUME_24H_USDT=10000000
 SPOT_CVD_UPDATE_INTERVAL_SECONDS=300
 ```
+
+LONG-бот теперь ищет практический импульс, а не идеальную структуру:
+
+```text
+жестко: цена за окно растет минимум на PRICE_MIN_CHANGE_PCT
+жестко: futures CVD delta положительный минимум на MIN_CVD_DELTA_USDT
+жестко: сила сигнала минимум LONG_MIN_SIGNAL_SCORE
+мягко: OI, CVD %, spot CVD, оборот к базе и база роста только добавляют score
+```
+
+`MIN_NEW_TRADES`, `LONG_MIN_SPOT_CVD_CHANGE_PCT` и `LONG_MIN_TURNOVER_RATIO_TO_BASE` больше не душат сигнал сами по себе. Они помогают оценить силу, но не отсекают монету, если цена и futures CVD уже показывают импульс.
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 

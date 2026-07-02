@@ -320,28 +320,15 @@ class LongScanner:
             price_change_pct=price_change_pct,
             base_structure=base_structure,
         )
-        spot_filter_ok = (
-            current.new_spot_trades < self.settings.long_min_spot_trades_for_filter
-            or spot_cvd_change_pct >= self.settings.long_min_spot_cvd_change_pct
-        )
+        price_momentum_ok = price_change_pct >= self.settings.price_min_change_pct
+        cvd_flow_ok = cvd_delta >= self.settings.min_cvd_delta_usdt
 
         checks = {
-            "oi": oi_change_pct >= self.settings.oi_threshold_pct,
-            "cvd_delta": cvd_delta >= self.settings.min_cvd_delta_usdt,
-            "cvd_pct": cvd_change_pct >= self.settings.cvd_threshold_pct,
-            "new_trades": current.new_trades >= self.settings.min_new_trades,
-            "spot_cvd": spot_filter_ok,
+            "price_momentum": price_momentum_ok,
+            "cvd_delta": cvd_flow_ok,
             "score": signal_score >= self.settings.long_min_signal_score,
-            "base_growth": base_structure.base_growth_pct
-            <= self.settings.long_max_price_growth_lookback_pct,
-            "turnover_ratio": base_structure.turnover_ratio_to_base
-            >= self.settings.long_min_turnover_ratio_to_base,
             "price_too_high": price_change_pct
             <= self.settings.long_max_price_change_window_pct,
-            "price_hold": (
-                not self.settings.require_price_hold
-                or price_change_pct >= self.settings.price_min_change_pct
-            ),
             "binance_volume": (
                 not self.settings.binance_confirmation_required
                 or (
@@ -439,7 +426,7 @@ class LongScanner:
 
         passed_checks = [name for name, passed in checks.items() if passed]
         missing_checks = [name for name, passed in checks.items() if not passed]
-        if len(passed_checks) < 5:
+        if len(passed_checks) < 3:
             return None
 
         return LongWatchlistAlert(
@@ -513,12 +500,12 @@ class LongScanner:
         base_structure: BaseStructure,
     ) -> int:
         score = 0
-        if base_structure.base_growth_pct <= 10:
+        if base_structure.base_growth_pct <= 20:
             score += 2
         elif base_structure.base_growth_pct <= self.settings.long_max_price_growth_lookback_pct:
             score += 1
 
-        if base_structure.turnover_ratio_to_base >= 5:
+        if base_structure.turnover_ratio_to_base >= 3:
             score += 2
         elif base_structure.turnover_ratio_to_base >= self.settings.long_min_turnover_ratio_to_base:
             score += 1
@@ -528,15 +515,20 @@ class LongScanner:
         elif oi_change_pct >= self.settings.oi_threshold_pct:
             score += 1
 
-        if cvd_change_pct >= self.settings.cvd_threshold_pct * 2 and cvd_delta > 0:
+        if cvd_delta >= self.settings.min_cvd_delta_usdt * 3:
             score += 2
-        elif cvd_change_pct >= self.settings.cvd_threshold_pct and cvd_delta > 0:
+        elif cvd_delta >= self.settings.min_cvd_delta_usdt:
+            score += 1
+
+        if cvd_change_pct >= self.settings.cvd_threshold_pct:
             score += 1
 
         if spot_cvd_change_pct > 0:
             score += 1
 
-        if 0 <= price_change_pct <= 10:
+        if price_change_pct >= self.settings.price_min_change_pct * 3:
+            score += 2
+        elif price_change_pct >= self.settings.price_min_change_pct:
             score += 1
 
         return min(score, 10)
