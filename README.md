@@ -118,6 +118,12 @@ LONG_MIN_SIGNAL_SCORE=4
 LONG_WATCHLIST_MIN_SCORE=3
 LONG_MIN_SPOT_CVD_CHANGE_PCT=-5
 LONG_MIN_SPOT_TRADES_FOR_FILTER=20
+LONG_ACCUMULATION_ENABLED=true
+LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT=1.5
+LONG_ACCUMULATION_MIN_OI_CHANGE_PCT=1
+LONG_ACCUMULATION_MIN_CVD_DELTA_USDT=3000
+LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT=25
+LONG_ACCUMULATION_MIN_SIGNAL_SCORE=4
 VERIFY_SSL=true
 DEBUG_ERRORS=false
 TELEGRAM_ENABLED=true
@@ -148,6 +154,12 @@ LONG-бот теперь ищет практический импульс, а н
 ```
 
 `MIN_NEW_TRADES`, `LONG_MIN_SPOT_CVD_CHANGE_PCT` и `LONG_MIN_TURNOVER_RATIO_TO_BASE` больше не душат сигнал сами по себе. Они помогают оценить силу, но не отсекают монету, если цена и futures CVD уже показывают импульс.
+
+Если цена еще почти стоит на месте, но OI и futures CVD уже набираются, бот отправит отдельный ранний сигнал:
+
+```text
+🟢 LONG ACCUMULATION
+```
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 

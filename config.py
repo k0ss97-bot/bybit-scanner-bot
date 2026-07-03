@@ -75,6 +75,12 @@ class Settings:
     long_watchlist_min_score: int
     long_min_spot_cvd_change_pct: float
     long_min_spot_trades_for_filter: int
+    long_accumulation_enabled: bool
+    long_accumulation_max_price_change_pct: float
+    long_accumulation_min_oi_change_pct: float
+    long_accumulation_min_cvd_delta_usdt: float
+    long_accumulation_max_current_from_base_pct: float
+    long_accumulation_min_signal_score: int
     spot_cvd_update_interval_seconds: int
     watchlist_enabled: bool
     watchlist_cooldown_minutes: int
@@ -170,6 +176,12 @@ def get_settings() -> Settings:
         long_watchlist_min_score=_int("LONG_WATCHLIST_MIN_SCORE", 3),
         long_min_spot_cvd_change_pct=_float("LONG_MIN_SPOT_CVD_CHANGE_PCT", -5),
         long_min_spot_trades_for_filter=_int("LONG_MIN_SPOT_TRADES_FOR_FILTER", 20),
+        long_accumulation_enabled=_bool("LONG_ACCUMULATION_ENABLED", True),
+        long_accumulation_max_price_change_pct=_float("LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT", 1.5),
+        long_accumulation_min_oi_change_pct=_float("LONG_ACCUMULATION_MIN_OI_CHANGE_PCT", 1),
+        long_accumulation_min_cvd_delta_usdt=_float("LONG_ACCUMULATION_MIN_CVD_DELTA_USDT", 3000),
+        long_accumulation_max_current_from_base_pct=_float("LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT", 25),
+        long_accumulation_min_signal_score=_int("LONG_ACCUMULATION_MIN_SIGNAL_SCORE", 4),
         spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
         watchlist_enabled=_bool("WATCHLIST_ENABLED", False),
         watchlist_cooldown_minutes=_int("WATCHLIST_COOLDOWN_MINUTES", 120),

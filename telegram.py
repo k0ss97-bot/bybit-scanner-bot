@@ -78,8 +78,15 @@ class TelegramNotifier:
 
 
 def format_signal(signal: LongSignal) -> str:
+    is_accumulation = getattr(signal, "setup_type", "momentum") == "accumulation"
+    title = "🟢 LONG ACCUMULATION" if is_accumulation else "🟢 LONG WATCH"
+    reason = (
+        "Причина: цена еще почти не ушла вверх, но OI и futures CVD уже набираются. Возможная фаза накопления перед импульсом."
+        if is_accumulation
+        else "Причина: цена уже пошла вверх, futures CVD поддерживает движение. Возможное развитие импульса."
+    )
     return (
-        "🟢 LONG WATCH\n\n"
+        f"{title}\n\n"
         f"Монета: {signal.symbol}\n"
         f"График: https://www.bybit.com/trade/usdt/{signal.symbol}\n"
         f"Окно: {signal.window_minutes}m\n\n"
@@ -101,7 +108,7 @@ def format_signal(signal: LongSignal) -> str:
         f"New trades: {signal.new_trades}\n"
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
-        "Причина: монета не была сильно разогнана в базе, но сейчас резко растут OI и futures CVD. Возможное зарождение импульса."
+        f"{reason}"
     )
 
 

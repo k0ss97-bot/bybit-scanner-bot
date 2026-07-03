@@ -36,6 +36,7 @@ class LongSignal:
     new_trades: int
     new_spot_trades: int
     consecutive_matches: int
+    setup_type: str = "momentum"
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,9 @@ class LongScanner:
                     state.last_alert_score = signal.signal_score
                     if self.history is not None:
                         self.history.record_signal(
-                            signal_type="long",
+                            signal_type="long_accumulation"
+                            if signal.setup_type == "accumulation"
+                            else "long",
                             symbol=signal.symbol,
                             ts=now,
                             price=signal.price,
@@ -339,24 +342,46 @@ class LongScanner:
             ),
         }
 
+        setup_type = "momentum"
         if not all(checks.values()):
-            state.consecutive_matches = 0
-            for reason, passed in checks.items():
-                if not passed:
-                    count_reason(rejection_reasons, reason)
-            return None, self._build_watchlist_alert(
-                now=now,
-                ticker=ticker,
-                state=state,
-                signal_score=signal_score,
-                checks=checks,
-                oi_change_pct=oi_change_pct,
-                cvd_change_pct=cvd_change_pct,
-                cvd_delta=cvd_delta,
-                spot_cvd_change_pct=spot_cvd_change_pct,
-                price_change_pct=price_change_pct,
-                turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
-            )
+            accumulation_checks = {
+                "accumulation_enabled": self.settings.long_accumulation_enabled,
+                "price_flat": -self.settings.price_min_change_pct
+                <= price_change_pct
+                <= self.settings.long_accumulation_max_price_change_pct,
+                "oi_building": oi_change_pct
+                >= self.settings.long_accumulation_min_oi_change_pct,
+                "cvd_building": cvd_delta
+                >= self.settings.long_accumulation_min_cvd_delta_usdt,
+                "not_overextended": base_structure.current_from_base_pct
+                <= self.settings.long_accumulation_max_current_from_base_pct,
+                "score": signal_score >= self.settings.long_accumulation_min_signal_score,
+                "binance_volume": checks["binance_volume"],
+            }
+            if all(accumulation_checks.values()):
+                checks = accumulation_checks
+                setup_type = "accumulation"
+            else:
+                state.consecutive_matches = 0
+                for reason, passed in checks.items():
+                    if not passed:
+                        count_reason(rejection_reasons, reason)
+                for reason, passed in accumulation_checks.items():
+                    if not passed:
+                        count_reason(rejection_reasons, f"acc_{reason}")
+                return None, self._build_watchlist_alert(
+                    now=now,
+                    ticker=ticker,
+                    state=state,
+                    signal_score=signal_score,
+                    checks={**checks, **accumulation_checks},
+                    oi_change_pct=oi_change_pct,
+                    cvd_change_pct=cvd_change_pct,
+                    cvd_delta=cvd_delta,
+                    spot_cvd_change_pct=spot_cvd_change_pct,
+                    price_change_pct=price_change_pct,
+                    turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+                )
 
         if (
             now - state.last_alert_ts < self.settings.alert_cooldown_minutes * 60
@@ -404,6 +429,7 @@ class LongScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+            setup_type=setup_type,
         ), None
 
     def _build_watchlist_alert(
