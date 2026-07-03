@@ -5,7 +5,7 @@ import sqlite3
 import time
 
 
-REVIEW_SCHEMA_VERSION = "scanner-filtered-v1"
+REVIEW_SCHEMA_VERSION = "scanner-filtered-v2"
 
 
 class HistoryStore:
@@ -588,8 +588,10 @@ def _review_metrics(
 
 
 def _scanner_for_signal_type(signal_type: str) -> str | None:
-    if signal_type == "long":
+    if signal_type in {"long", "long_accumulation", "long_breakout"}:
         return "long"
-    if signal_type in {"pump", "pump_exhaustion"}:
+    if signal_type in {"pump", "pump_exhaustion", "short_breakdown"}:
         return "pump"
+    if signal_type.startswith("dump_"):
+        return signal_type
     return None

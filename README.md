@@ -130,12 +130,21 @@ LONG_MIN_SPOT_CVD_CHANGE_PCT=-5
 LONG_MIN_SPOT_TRADES_FOR_FILTER=20
 LONG_ACCUMULATION_ENABLED=true
 LONG_ACCUMULATION_WINDOW_MINUTES=120
+LONG_ACCUMULATION_WINDOWS_MINUTES=30,120,240
 LONG_ACCUMULATION_MIN_PRICE_CHANGE_PCT=-2.5
 LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT=4
 LONG_ACCUMULATION_MIN_OI_CHANGE_PCT=2
 LONG_ACCUMULATION_MIN_CVD_DELTA_USDT=10000
 LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT=25
 LONG_ACCUMULATION_MIN_SIGNAL_SCORE=4
+LONG_BREAKOUT_ENABLED=true
+LONG_BREAKOUT_WINDOW_MINUTES=30
+LONG_BREAKOUT_MIN_PRICE_CHANGE_PCT=0.8
+LONG_BREAKOUT_MAX_PRICE_CHANGE_PCT=12
+LONG_BREAKOUT_MIN_OI_CHANGE_PCT=1
+LONG_BREAKOUT_MIN_CVD_DELTA_USDT=5000
+LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT=40
+LONG_BREAKOUT_MIN_SIGNAL_SCORE=5
 VERIFY_SSL=true
 DEBUG_ERRORS=false
 TELEGRAM_ENABLED=true
@@ -184,6 +193,15 @@ LONG_MOMENTUM_ENABLED=false
 ```
 
 Этот сигнал смотрит не 15 минут, а `LONG_ACCUMULATION_WINDOW_MINUTES`. Так он может увидеть медленный набор позиции, когда цена еще стоит или слегка проседает.
+Дополнительно бот смотрит окна `LONG_ACCUMULATION_WINDOWS_MINUTES`: короткое окно ловит ранний старт, длинное окно ловит медленное накопление.
+
+Если цена уже начала выходить из диапазона, бот может отправить:
+
+```text
+🟢 LONG BREAKOUT
+```
+
+Этот сигнал смотрит `LONG_BREAKOUT_WINDOW_MINUTES`: цена уже двинулась вверх, но еще не должна быть перегрета сильнее `LONG_BREAKOUT_MAX_PRICE_CHANGE_PCT`.
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 `CANDIDATE_TRACKING_ENABLED=true` означает, что бот копит почти сигналы в базе для кнопки "Ближайшие". `WATCHLIST_ENABLED` оставлен под отдельные Telegram-alerts по watchlist и сейчас не влияет на реальные сигналы.

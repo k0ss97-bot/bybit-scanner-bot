@@ -277,12 +277,22 @@ def format_settings_message(settings) -> str:
         "LONG ACCUMULATION:\n"
         f"LONG_ACCUMULATION_ENABLED={str(settings.long_accumulation_enabled).lower()}\n"
         f"LONG_ACCUMULATION_WINDOW_MINUTES={settings.long_accumulation_window_minutes}\n"
+        f"LONG_ACCUMULATION_WINDOWS_MINUTES={','.join(str(item) for item in settings.long_accumulation_windows_minutes)}\n"
         f"LONG_ACCUMULATION_MIN_PRICE_CHANGE_PCT={settings.long_accumulation_min_price_change_pct:g}\n"
         f"LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT={settings.long_accumulation_max_price_change_pct:g}\n"
         f"LONG_ACCUMULATION_MIN_OI_CHANGE_PCT={settings.long_accumulation_min_oi_change_pct:g}\n"
         f"LONG_ACCUMULATION_MIN_CVD_DELTA_USDT={settings.long_accumulation_min_cvd_delta_usdt:g}\n"
         f"LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT={settings.long_accumulation_max_current_from_base_pct:g}\n"
         f"LONG_ACCUMULATION_MIN_SIGNAL_SCORE={settings.long_accumulation_min_signal_score}\n\n"
+        "LONG BREAKOUT:\n"
+        f"LONG_BREAKOUT_ENABLED={str(settings.long_breakout_enabled).lower()}\n"
+        f"LONG_BREAKOUT_WINDOW_MINUTES={settings.long_breakout_window_minutes}\n"
+        f"LONG_BREAKOUT_MIN_PRICE_CHANGE_PCT={settings.long_breakout_min_price_change_pct:g}\n"
+        f"LONG_BREAKOUT_MAX_PRICE_CHANGE_PCT={settings.long_breakout_max_price_change_pct:g}\n"
+        f"LONG_BREAKOUT_MIN_OI_CHANGE_PCT={settings.long_breakout_min_oi_change_pct:g}\n"
+        f"LONG_BREAKOUT_MIN_CVD_DELTA_USDT={settings.long_breakout_min_cvd_delta_usdt:g}\n"
+        f"LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT={settings.long_breakout_max_current_from_base_pct:g}\n"
+        f"LONG_BREAKOUT_MIN_SIGNAL_SCORE={settings.long_breakout_min_signal_score}\n\n"
         "PUMP:\n"
         f"PUMP_MIN_TURNOVER_24H_USDT={settings.pump_min_turnover_24h_usdt:g}\n"
         f"PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.pump_min_price_growth_lookback_pct:g}\n"
@@ -363,7 +373,7 @@ def format_stats_message(history: HistoryStore) -> str:
     return "\n".join(lines)
 
 
-def format_rejection_details_message() -> str:
+def format_rejection_details_message(scanner_filter: str | None = None) -> str:
     with STATUS_LOCK:
         snapshot = dict(SCANNER_STATUS)
 
@@ -371,7 +381,8 @@ def format_rejection_details_message() -> str:
         return "Пока нет данных. Дождись завершения первого скана."
 
     lines = ["Почему нет сигналов:"]
-    for scanner in SCANNERS:
+    scanners = (scanner_filter,) if scanner_filter else SCANNERS
+    for scanner in scanners:
         data = snapshot.get(scanner)
         if not data:
             lines.append(f"\n{scanner}: еще нет данных")
@@ -383,15 +394,19 @@ def format_rejection_details_message() -> str:
             lines.append(f"\n{scanner}:")
             for reason, count in items[:10]:
                 lines.append(f"{reason}: {count}")
-            continue
-
-        text_reasons = str(data.get("rejections", "none"))
-        if text_reasons == "none":
-            lines.append(
-                f"\n{scanner}: причин пока нет. Дождись завершения полного скана."
-            )
         else:
-            lines.append(f"\n{scanner}: {text_reasons}")
+            text_reasons = str(data.get("rejections", "none"))
+            if text_reasons == "none":
+                lines.append(
+                    f"\n{scanner}: причин пока нет. Дождись завершения полного скана."
+                )
+            else:
+                lines.append(f"\n{scanner}: {text_reasons}")
+
+        closest = data.get("closest", [])
+        if isinstance(closest, list) and closest:
+            lines.append("Ближайшие:")
+            lines.extend(str(item) for item in closest[:5])
 
     return "\n".join(lines)
 
@@ -486,6 +501,18 @@ def is_rejections_request(text: str) -> bool:
     )
 
 
+def rejection_target(text: str) -> str | None:
+    if text.startswith("/why long") or text in {"почему long", "почему лонг", "why long"}:
+        return "LONG"
+    if text.startswith("/why pump") or text in {"почему pump", "почему памп", "why pump"}:
+        return "PUMP"
+    if text.startswith("/why dump bybit"):
+        return "DUMP BYBIT"
+    if text.startswith("/why dump"):
+        return "DUMP BINANCE"
+    return None
+
+
 def is_recent_signals_request(text: str) -> bool:
     return (
         text.startswith("/last")
@@ -563,6 +590,7 @@ def run_status_loop() -> None:
                 if chat_id != str(settings.telegram_chat_id):
                     continue
                 target = status_target(text)
+                why_target = rejection_target(text)
                 if target is not None:
                     safe_send_message(notifier, format_single_status_message(target), menu_keyboard())
                 elif is_status_request(text):
@@ -571,6 +599,12 @@ def run_status_loop() -> None:
                     safe_send_message(notifier, format_settings_message(settings), menu_keyboard())
                 elif is_stats_request(text):
                     safe_send_message(notifier, format_stats_message(history), menu_keyboard())
+                elif why_target is not None:
+                    safe_send_message(
+                        notifier,
+                        format_rejection_details_message(why_target),
+                        menu_keyboard(),
+                    )
                 elif is_rejections_request(text):
                     safe_send_message(notifier, format_rejection_details_message(), menu_keyboard())
                 elif is_recent_signals_request(text):
@@ -636,11 +670,10 @@ def run_long_loop() -> None:
                 )
             )
             for signal in result.signals:
-                signal_type = (
-                    "long_accumulation"
-                    if getattr(signal, "setup_type", "momentum") == "accumulation"
-                    else "long"
-                )
+                signal_type = {
+                    "accumulation": "long_accumulation",
+                    "breakout": "long_breakout",
+                }.get(getattr(signal, "setup_type", "momentum"), "long")
                 send_signal_with_symbol_cooldown(
                     notifier=notifier,
                     history=history,

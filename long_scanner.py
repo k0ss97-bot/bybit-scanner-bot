@@ -136,10 +136,12 @@ class LongScanner:
                     state.last_alert_ts = now
                     state.last_alert_score = signal.signal_score
                     if self.history is not None:
+                        signal_type = {
+                            "accumulation": "long_accumulation",
+                            "breakout": "long_breakout",
+                        }.get(signal.setup_type, "long")
                         self.history.record_signal(
-                            signal_type="long_accumulation"
-                            if signal.setup_type == "accumulation"
-                            else "long",
+                            signal_type=signal_type,
                             symbol=signal.symbol,
                             ts=now,
                             price=signal.price,
@@ -291,6 +293,8 @@ class LongScanner:
         retention_minutes = max(
             self.settings.window_minutes,
             self.settings.long_accumulation_window_minutes,
+            self.settings.long_breakout_window_minutes,
+            *self.settings.long_accumulation_windows_minutes,
         )
         min_ts = now - retention_minutes * 60 * 3
         state.snapshots = [snapshot for snapshot in state.snapshots if snapshot.ts >= min_ts]
@@ -322,6 +326,14 @@ class LongScanner:
             count_reason(rejection_reasons, "no_base_structure")
             return None, None
 
+        binance_volume_ok = (
+            not self.settings.binance_confirmation_required
+            or (
+                binance_ticker is not None
+                and binance_ticker.quote_volume_24h
+                >= self.settings.binance_min_quote_volume_24h_usdt
+            )
+        )
         signal_score = self._score_signal(
             oi_change_pct=oi_change_pct,
             cvd_change_pct=cvd_change_pct,
@@ -330,8 +342,13 @@ class LongScanner:
             price_change_pct=price_change_pct,
             base_structure=base_structure,
         )
+        momentum_required_cvd = self._required_cvd_delta(
+            ticker,
+            self.settings.window_minutes,
+            self.settings.min_cvd_delta_usdt,
+        )
         price_momentum_ok = price_change_pct >= self.settings.price_min_change_pct
-        cvd_flow_ok = cvd_delta >= self.settings.min_cvd_delta_usdt
+        cvd_flow_ok = cvd_delta >= momentum_required_cvd
 
         checks = {
             "momentum_enabled": self.settings.long_momentum_enabled,
@@ -340,91 +357,117 @@ class LongScanner:
             "score": signal_score >= self.settings.long_min_signal_score,
             "price_too_high": price_change_pct
             <= self.settings.long_max_price_change_window_pct,
-            "binance_volume": (
-                not self.settings.binance_confirmation_required
-                or (
-                    binance_ticker is not None
-                    and binance_ticker.quote_volume_24h
-                    >= self.settings.binance_min_quote_volume_24h_usdt
-                )
-            ),
+            "binance_volume": binance_volume_ok,
         }
 
         setup_type = "momentum"
-        if not all(checks.values()):
-            accumulation_previous = self._find_window_snapshot(
-                current.ts,
-                state,
-                self.settings.long_accumulation_window_minutes,
-            )
-            if accumulation_previous is None:
-                count_reason(rejection_reasons, "acc_warmup_no_window")
-                accumulation_checks = {"accumulation_window": False}
-            else:
-                acc_oi_change_pct = pct_change(accumulation_previous.oi, current.oi)
-                acc_cvd_delta = current.cvd - accumulation_previous.cvd
-                acc_cvd_change_pct = pct_change(accumulation_previous.cvd, current.cvd)
-                acc_spot_cvd_delta = current.spot_cvd - accumulation_previous.spot_cvd
-                acc_spot_cvd_change_pct = pct_change(
-                    accumulation_previous.spot_cvd,
-                    current.spot_cvd,
-                )
-                acc_price_change_pct = pct_change(accumulation_previous.price, current.price)
-                accumulation_score = self._score_signal(
-                    oi_change_pct=acc_oi_change_pct,
-                    cvd_change_pct=acc_cvd_change_pct,
-                    cvd_delta=acc_cvd_delta,
-                    spot_cvd_change_pct=acc_spot_cvd_change_pct,
-                    price_change_pct=acc_price_change_pct,
-                    base_structure=base_structure,
-                )
-                accumulation_checks = {
-                    "accumulation_enabled": self.settings.long_accumulation_enabled,
-                    "price_flat": self.settings.long_accumulation_min_price_change_pct
-                    <= acc_price_change_pct
-                    <= self.settings.long_accumulation_max_price_change_pct,
-                    "oi_building": acc_oi_change_pct
-                    >= self.settings.long_accumulation_min_oi_change_pct,
-                    "cvd_building": acc_cvd_delta
-                    >= self.settings.long_accumulation_min_cvd_delta_usdt,
-                    "not_overextended": base_structure.current_from_base_pct
-                    <= self.settings.long_accumulation_max_current_from_base_pct,
-                    "score": accumulation_score
-                    >= self.settings.long_accumulation_min_signal_score,
-                    "binance_volume": checks["binance_volume"],
-                }
-                if all(accumulation_checks.values()):
-                    checks = accumulation_checks
-                    setup_type = "accumulation"
-                    oi_change_pct = acc_oi_change_pct
-                    cvd_delta = acc_cvd_delta
-                    cvd_change_pct = acc_cvd_change_pct
-                    spot_cvd_delta = acc_spot_cvd_delta
-                    spot_cvd_change_pct = acc_spot_cvd_change_pct
-                    price_change_pct = acc_price_change_pct
-                    signal_score = accumulation_score
+        signal_window_minutes = self.settings.window_minutes
+        signal_checks = checks
+        best_watchlist = (
+            signal_score,
+            checks,
+            oi_change_pct,
+            cvd_change_pct,
+            cvd_delta,
+            spot_cvd_change_pct,
+            price_change_pct,
+            self.settings.window_minutes,
+        )
 
-            if setup_type != "accumulation":
-                state.consecutive_matches = 0
-                for reason, passed in checks.items():
-                    if not passed:
-                        count_reason(rejection_reasons, reason)
-                for reason, passed in accumulation_checks.items():
-                    if not passed:
-                        count_reason(rejection_reasons, f"acc_{reason}")
-                return None, self._build_watchlist_alert(
-                    now=now,
-                    ticker=ticker,
-                    state=state,
-                    signal_score=signal_score,
-                    checks={**checks, **accumulation_checks},
-                    oi_change_pct=oi_change_pct,
-                    cvd_change_pct=cvd_change_pct,
-                    cvd_delta=cvd_delta,
-                    spot_cvd_change_pct=spot_cvd_change_pct,
-                    price_change_pct=price_change_pct,
-                    turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+        if not all(checks.values()):
+            breakout_candidate = self._build_breakout_candidate(
+                ticker=ticker,
+                current=current,
+                state=state,
+                base_structure=base_structure,
+                binance_volume_ok=binance_volume_ok,
+            )
+            if breakout_candidate is not None:
+                best_watchlist = best_candidate(
+                    best_watchlist,
+                    (
+                        *breakout_candidate,
+                        self.settings.long_breakout_window_minutes,
+                    ),
                 )
+                if all(breakout_candidate[1].values()):
+                    (
+                        signal_score,
+                        signal_checks,
+                        oi_change_pct,
+                        cvd_change_pct,
+                        cvd_delta,
+                        spot_cvd_change_pct,
+                        price_change_pct,
+                    ) = breakout_candidate
+                    spot_cvd_delta = current.spot_cvd - self._find_window_snapshot(
+                        current.ts,
+                        state,
+                        self.settings.long_breakout_window_minutes,
+                    ).spot_cvd
+                    setup_type = "breakout"
+                    signal_window_minutes = self.settings.long_breakout_window_minutes
+
+        if setup_type == "momentum" and not all(checks.values()):
+            accumulation_candidate = self._best_accumulation_candidate(
+                ticker=ticker,
+                current=current,
+                state=state,
+                base_structure=base_structure,
+                binance_volume_ok=binance_volume_ok,
+                rejection_reasons=rejection_reasons,
+            )
+            if accumulation_candidate is not None:
+                best_watchlist = best_candidate(
+                    best_watchlist,
+                    (
+                        *accumulation_candidate[:7],
+                        accumulation_candidate[8],
+                    ),
+                )
+                if all(accumulation_candidate[1].values()):
+                    (
+                        signal_score,
+                        signal_checks,
+                        oi_change_pct,
+                        cvd_change_pct,
+                        cvd_delta,
+                        spot_cvd_change_pct,
+                        price_change_pct,
+                        spot_cvd_delta,
+                        signal_window_minutes,
+                    ) = accumulation_candidate
+                    setup_type = "accumulation"
+
+        if setup_type == "momentum" and not all(checks.values()):
+            state.consecutive_matches = 0
+            (
+                best_score,
+                best_checks,
+                best_oi,
+                best_cvd_pct,
+                best_cvd_delta,
+                best_spot_cvd,
+                best_price,
+                best_window_minutes,
+            ) = best_watchlist
+            for reason, passed in best_checks.items():
+                if not passed:
+                    count_reason(rejection_reasons, reason)
+            return None, self._build_watchlist_alert(
+                now=now,
+                ticker=ticker,
+                state=state,
+                signal_score=best_score,
+                checks=best_checks,
+                oi_change_pct=best_oi,
+                cvd_change_pct=best_cvd_pct,
+                cvd_delta=best_cvd_delta,
+                spot_cvd_change_pct=best_spot_cvd,
+                price_change_pct=best_price,
+                turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+                window_minutes=best_window_minutes,
+            )
 
         repeat_rejection = self._repeat_alert_rejection(now, state, signal_score)
         if repeat_rejection is not None:
@@ -439,18 +482,19 @@ class LongScanner:
                 ticker=ticker,
                 state=state,
                 signal_score=signal_score,
-                checks=checks,
+                checks=signal_checks,
                 oi_change_pct=oi_change_pct,
                 cvd_change_pct=cvd_change_pct,
                 cvd_delta=cvd_delta,
                 spot_cvd_change_pct=spot_cvd_change_pct,
                 price_change_pct=price_change_pct,
                 turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+                window_minutes=signal_window_minutes,
             )
 
         return LongSignal(
             symbol=ticker.symbol,
-            window_minutes=self.settings.window_minutes,
+            window_minutes=signal_window_minutes,
             lookback_days=base_structure.lookback_days,
             base_growth_pct=base_structure.base_growth_pct,
             current_from_base_pct=base_structure.current_from_base_pct,
@@ -473,6 +517,163 @@ class LongScanner:
             setup_type=setup_type,
         ), None
 
+    def _build_breakout_candidate(
+        self,
+        *,
+        ticker: Ticker,
+        current: Snapshot,
+        state: SymbolState,
+        base_structure: BaseStructure,
+        binance_volume_ok: bool,
+    ) -> tuple[int, dict[str, bool], float, float, float, float, float] | None:
+        previous = self._find_window_snapshot(
+            current.ts,
+            state,
+            self.settings.long_breakout_window_minutes,
+        )
+        if previous is None:
+            return (
+                0,
+                {"breakout_window": False},
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            )
+
+        oi_change_pct = pct_change(previous.oi, current.oi)
+        cvd_delta = current.cvd - previous.cvd
+        cvd_change_pct = pct_change(previous.cvd, current.cvd)
+        spot_cvd_change_pct = pct_change(previous.spot_cvd, current.spot_cvd)
+        price_change_pct = pct_change(previous.price, current.price)
+        required_cvd = self._required_cvd_delta(
+            ticker,
+            self.settings.long_breakout_window_minutes,
+            self.settings.long_breakout_min_cvd_delta_usdt,
+        )
+        signal_score = self._score_signal(
+            oi_change_pct=oi_change_pct,
+            cvd_change_pct=cvd_change_pct,
+            cvd_delta=cvd_delta,
+            spot_cvd_change_pct=spot_cvd_change_pct,
+            price_change_pct=price_change_pct,
+            base_structure=base_structure,
+        )
+        checks = {
+            "breakout_enabled": self.settings.long_breakout_enabled,
+            "breakout_price": price_change_pct
+            >= self.settings.long_breakout_min_price_change_pct,
+            "breakout_not_overheated": price_change_pct
+            <= self.settings.long_breakout_max_price_change_pct,
+            "breakout_oi": oi_change_pct
+            >= self.settings.long_breakout_min_oi_change_pct,
+            "breakout_cvd": cvd_delta >= required_cvd,
+            "breakout_not_overextended": base_structure.current_from_base_pct
+            <= self.settings.long_breakout_max_current_from_base_pct,
+            "breakout_score": signal_score
+            >= self.settings.long_breakout_min_signal_score,
+            "binance_volume": binance_volume_ok,
+        }
+        return (
+            signal_score,
+            checks,
+            oi_change_pct,
+            cvd_change_pct,
+            cvd_delta,
+            spot_cvd_change_pct,
+            price_change_pct,
+        )
+
+    def _best_accumulation_candidate(
+        self,
+        *,
+        ticker: Ticker,
+        current: Snapshot,
+        state: SymbolState,
+        base_structure: BaseStructure,
+        binance_volume_ok: bool,
+        rejection_reasons: dict[str, int],
+    ) -> tuple[int, dict[str, bool], float, float, float, float, float, float, int] | None:
+        best = None
+        windows = sorted(
+            set(
+                self.settings.long_accumulation_windows_minutes
+                or (self.settings.long_accumulation_window_minutes,)
+            )
+        )
+        for window_minutes in windows:
+            accumulation_previous = self._find_window_snapshot(
+                current.ts,
+                state,
+                window_minutes,
+            )
+            if accumulation_previous is None:
+                count_reason(rejection_reasons, "acc_warmup_no_window")
+                candidate = (
+                    0,
+                    {f"acc_{window_minutes}m_window": False},
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    window_minutes,
+                )
+            else:
+                acc_oi_change_pct = pct_change(accumulation_previous.oi, current.oi)
+                acc_cvd_delta = current.cvd - accumulation_previous.cvd
+                acc_cvd_change_pct = pct_change(accumulation_previous.cvd, current.cvd)
+                acc_spot_cvd_delta = current.spot_cvd - accumulation_previous.spot_cvd
+                acc_spot_cvd_change_pct = pct_change(
+                    accumulation_previous.spot_cvd,
+                    current.spot_cvd,
+                )
+                acc_price_change_pct = pct_change(accumulation_previous.price, current.price)
+                required_cvd = self._required_cvd_delta(
+                    ticker,
+                    window_minutes,
+                    self.settings.long_accumulation_min_cvd_delta_usdt,
+                )
+                accumulation_score = self._score_signal(
+                    oi_change_pct=acc_oi_change_pct,
+                    cvd_change_pct=acc_cvd_change_pct,
+                    cvd_delta=acc_cvd_delta,
+                    spot_cvd_change_pct=acc_spot_cvd_change_pct,
+                    price_change_pct=acc_price_change_pct,
+                    base_structure=base_structure,
+                )
+                accumulation_checks = {
+                    f"acc_{window_minutes}m_enabled": self.settings.long_accumulation_enabled,
+                    f"acc_{window_minutes}m_price_flat": self.settings.long_accumulation_min_price_change_pct
+                    <= acc_price_change_pct
+                    <= self.settings.long_accumulation_max_price_change_pct,
+                    f"acc_{window_minutes}m_oi_building": acc_oi_change_pct
+                    >= self.settings.long_accumulation_min_oi_change_pct,
+                    f"acc_{window_minutes}m_cvd_building": acc_cvd_delta
+                    >= required_cvd,
+                    f"acc_{window_minutes}m_not_overextended": base_structure.current_from_base_pct
+                    <= self.settings.long_accumulation_max_current_from_base_pct,
+                    f"acc_{window_minutes}m_score": accumulation_score
+                    >= self.settings.long_accumulation_min_signal_score,
+                    "binance_volume": binance_volume_ok,
+                }
+                candidate = (
+                    accumulation_score,
+                    accumulation_checks,
+                    acc_oi_change_pct,
+                    acc_cvd_change_pct,
+                    acc_cvd_delta,
+                    acc_spot_cvd_change_pct,
+                    acc_price_change_pct,
+                    acc_spot_cvd_delta,
+                    window_minutes,
+                )
+
+            best = best_candidate(best, candidate)
+        return best
+
     def _build_watchlist_alert(
         self,
         *,
@@ -487,6 +688,7 @@ class LongScanner:
         spot_cvd_change_pct: float,
         price_change_pct: float,
         turnover_ratio_to_base: float,
+        window_minutes: int,
     ) -> LongWatchlistAlert | None:
         if signal_score < self.settings.long_watchlist_min_score:
             return None
@@ -498,7 +700,7 @@ class LongScanner:
 
         return LongWatchlistAlert(
             symbol=ticker.symbol,
-            window_minutes=self.settings.window_minutes,
+            window_minutes=window_minutes,
             signal_score=signal_score,
             passed_checks=passed_checks,
             missing_checks=missing_checks,
@@ -530,6 +732,26 @@ class LongScanner:
             return "no_score_improvement"
 
         return None
+
+    def _required_cvd_delta(
+        self,
+        ticker: Ticker,
+        window_minutes: int,
+        configured_min: float,
+    ) -> float:
+        turnover = max(0.0, ticker.turnover_24h)
+        if turnover < 3_000_000:
+            turnover_cap = 5_000
+        elif turnover < 10_000_000:
+            turnover_cap = 8_000
+        elif turnover < 50_000_000:
+            turnover_cap = 15_000
+        else:
+            turnover_cap = 30_000
+
+        expected_window_turnover = turnover * (max(1, window_minutes) / 1440)
+        flow_based_min = expected_window_turnover * 0.03
+        return max(2_000, min(max(configured_min, flow_based_min), turnover_cap))
 
     def _get_base_structure(self, ticker: Ticker) -> BaseStructure | None:
         now = int(time.time())
@@ -643,6 +865,21 @@ def safe_ratio(value: float, base: float) -> float:
     if base <= 0:
         return 999.0 if value > 0 else 0.0
     return value / base
+
+
+def candidate_rank(candidate: tuple) -> tuple[int, int]:
+    score = int(candidate[0])
+    checks = candidate[1]
+    passed_count = sum(1 for passed in checks.values() if passed)
+    return passed_count, score
+
+
+def best_candidate(current: tuple | None, candidate: tuple) -> tuple:
+    if current is None:
+        return candidate
+    if candidate_rank(candidate) > candidate_rank(current):
+        return candidate
+    return current
 
 
 def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:
