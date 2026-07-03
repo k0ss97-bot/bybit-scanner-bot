@@ -95,8 +95,12 @@ def format_signal(signal: LongSignal) -> str:
         f"Окно: {signal.window_minutes}m\n\n"
         f"Сила сигнала: {signal.signal_score}/10\n"
         f"База {signal.lookback_days}d: {signal.base_growth_pct:+.2f}%\n"
+        f"Диапазон базы: {signal.base_range_pct:.2f}%\n"
         f"Цена от начала базы: {signal.current_from_base_pct:+.2f}%\n"
+        f"Цена от high базы: {signal.price_from_base_high_pct:+.2f}%\n"
+        f"Рост 24h: {signal.price_change_24h_pct:+.2f}%\n"
         f"High базы: {signal.base_high_price:g}\n"
+        f"Low базы: {signal.base_low_price:g}\n"
         f"Оборот к базе: x{signal.turnover_ratio_to_base:.2f}\n"
         f"Средний оборот базы: {signal.base_avg_turnover:,.0f} USDT\n"
         f"OI: +{signal.oi_change_pct:.2f}%\n"
@@ -143,8 +147,15 @@ def format_pump_signal(signal: PumpExhaustionSignal) -> str:
 
 
 def format_short_breakdown_signal(signal: ShortBreakdownSignal) -> str:
+    is_long_trap = getattr(signal, "setup_type", "breakdown") == "long_trap"
+    title = "🔻 SHORT LONG TRAP" if is_long_trap else "🔻 SHORT BREAKDOWN"
+    reason = (
+        "Причина: после пампа цена уже не продолжает рост, OI растет, а futures CVD отрицательный. Возможна ловушка для поздних лонгов / набор шорта."
+        if is_long_trap
+        else "Причина: после пампа цена падает, OI растет или не падает, futures CVD отрицательный. Возможен вход новых шортов / breakdown."
+    )
     return (
-        "🔻 SHORT BREAKDOWN\n\n"
+        f"{title}\n\n"
         f"Монета: {signal.symbol}\n"
         f"График: https://www.bybit.com/trade/usdt/{signal.symbol}\n"
         f"Окно: {signal.window_minutes}m\n\n"
@@ -164,7 +175,7 @@ def format_short_breakdown_signal(signal: ShortBreakdownSignal) -> str:
         f"New trades: {signal.new_trades}\n"
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
-        "Причина: после пампа цена падает, OI растет или не падает, futures CVD отрицательный. Возможен вход новых шортов / breakdown."
+        f"{reason}"
     )
 
 

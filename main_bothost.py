@@ -270,6 +270,8 @@ def format_settings_message(settings) -> str:
         f"LONG_MOMENTUM_ENABLED={str(settings.long_momentum_enabled).lower()}\n"
         f"LONG_LOOKBACK_DAYS={settings.long_lookback_days}\n"
         f"LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT={settings.long_max_price_growth_lookback_pct:g}\n"
+        f"LONG_MAX_24H_PRICE_CHANGE_PCT={settings.long_max_24h_price_change_pct:g}\n"
+        f"LONG_COMPRESSION_MAX_BASE_RANGE_PCT={settings.long_compression_max_base_range_pct:g}\n"
         f"LONG_MIN_TURNOVER_RATIO_TO_BASE={settings.long_min_turnover_ratio_to_base:g}\n"
         f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n"
         f"ALERT_COOLDOWN_MINUTES={settings.alert_cooldown_minutes}\n"
@@ -303,7 +305,12 @@ def format_settings_message(settings) -> str:
         f"SHORT_BREAKDOWN_ENABLED={str(settings.short_breakdown_enabled).lower()}\n"
         f"SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT={settings.short_breakdown_min_oi_growth_pct:g}\n"
         f"SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_breakdown_max_price_change_window_pct:g}\n"
-        f"SHORT_BREAKDOWN_MIN_SIGNAL_SCORE={settings.short_breakdown_min_signal_score}\n\n"
+        f"SHORT_BREAKDOWN_MIN_SIGNAL_SCORE={settings.short_breakdown_min_signal_score}\n"
+        f"SHORT_LONG_TRAP_ENABLED={str(settings.short_long_trap_enabled).lower()}\n"
+        f"SHORT_LONG_TRAP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.short_long_trap_min_drawdown_from_high_pct:g}\n"
+        f"SHORT_LONG_TRAP_MIN_OI_GROWTH_PCT={settings.short_long_trap_min_oi_growth_pct:g}\n"
+        f"SHORT_LONG_TRAP_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_long_trap_max_price_change_window_pct:g}\n"
+        f"SHORT_LONG_TRAP_MIN_SIGNAL_SCORE={settings.short_long_trap_min_signal_score}\n\n"
         "DUMP:\n"
         f"DUMP_ENABLED={str(settings.dump_enabled).lower()}\n"
         f"DUMP_MIN_TURNOVER_24H_USDT={settings.dump_min_turnover_24h_usdt:g}\n"
@@ -738,12 +745,17 @@ def run_pump_loop() -> None:
             )
             for signal in result.signals:
                 if isinstance(signal, ShortBreakdownSignal):
+                    signal_type = (
+                        "short_long_trap"
+                        if getattr(signal, "setup_type", "breakdown") == "long_trap"
+                        else "short_breakdown"
+                    )
                     send_signal_with_symbol_cooldown(
                         notifier=notifier,
                         history=history,
                         settings=settings,
                         signal=signal,
-                        signal_type="short_breakdown",
+                        signal_type=signal_type,
                         formatter=format_short_breakdown_signal,
                     )
                 else:

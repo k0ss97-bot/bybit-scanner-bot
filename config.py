@@ -87,6 +87,8 @@ class Settings:
     long_base_cache_minutes: int
     long_min_signal_score: int
     long_watchlist_min_score: int
+    long_max_24h_price_change_pct: float
+    long_compression_max_base_range_pct: float
     long_min_spot_cvd_change_pct: float
     long_min_spot_trades_for_filter: int
     long_accumulation_enabled: bool
@@ -137,6 +139,11 @@ class Settings:
     short_breakdown_min_oi_growth_pct: float
     short_breakdown_max_price_change_window_pct: float
     short_breakdown_min_signal_score: int
+    short_long_trap_enabled: bool
+    short_long_trap_min_drawdown_from_high_pct: float
+    short_long_trap_min_oi_growth_pct: float
+    short_long_trap_max_price_change_window_pct: float
+    short_long_trap_min_signal_score: int
     dump_enabled: bool
     dump_window_minutes: int
     dump_lookback_days: int
@@ -204,6 +211,8 @@ def get_settings() -> Settings:
         long_base_cache_minutes=_int("LONG_BASE_CACHE_MINUTES", 15),
         long_min_signal_score=_int("LONG_MIN_SIGNAL_SCORE", 4),
         long_watchlist_min_score=_int("LONG_WATCHLIST_MIN_SCORE", 3),
+        long_max_24h_price_change_pct=_float("LONG_MAX_24H_PRICE_CHANGE_PCT", 35),
+        long_compression_max_base_range_pct=_float("LONG_COMPRESSION_MAX_BASE_RANGE_PCT", 35),
         long_min_spot_cvd_change_pct=_float("LONG_MIN_SPOT_CVD_CHANGE_PCT", -5),
         long_min_spot_trades_for_filter=_int("LONG_MIN_SPOT_TRADES_FOR_FILTER", 20),
         long_accumulation_enabled=_bool("LONG_ACCUMULATION_ENABLED", True),
@@ -257,6 +266,11 @@ def get_settings() -> Settings:
         short_breakdown_min_oi_growth_pct=_float("SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT", 0),
         short_breakdown_max_price_change_window_pct=_float("SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT", -0.5),
         short_breakdown_min_signal_score=_int("SHORT_BREAKDOWN_MIN_SIGNAL_SCORE", 5),
+        short_long_trap_enabled=_bool("SHORT_LONG_TRAP_ENABLED", True),
+        short_long_trap_min_drawdown_from_high_pct=_float("SHORT_LONG_TRAP_MIN_DRAWDOWN_FROM_HIGH_PCT", 2),
+        short_long_trap_min_oi_growth_pct=_float("SHORT_LONG_TRAP_MIN_OI_GROWTH_PCT", 2),
+        short_long_trap_max_price_change_window_pct=_float("SHORT_LONG_TRAP_MAX_PRICE_CHANGE_WINDOW_PCT", 1),
+        short_long_trap_min_signal_score=_int("SHORT_LONG_TRAP_MIN_SIGNAL_SCORE", 5),
         dump_enabled=_bool("DUMP_ENABLED", True),
         dump_window_minutes=_int("DUMP_WINDOW_MINUTES", 15),
         dump_lookback_days=_int("DUMP_LOOKBACK_DAYS", 2),

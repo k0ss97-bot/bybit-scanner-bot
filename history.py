@@ -575,7 +575,7 @@ def _review_metrics(
 
     high = max(prices)
     low = min(prices)
-    if signal_type in {"pump", "pump_exhaustion", "short_breakdown"} or signal_type.startswith("dump_"):
+    if signal_type in {"pump", "pump_exhaustion", "short_breakdown", "short_long_trap"} or signal_type.startswith("dump_"):
         move_pct = ((entry_price - price_at_review) / entry_price) * 100
         max_favorable_pct = ((entry_price - low) / entry_price) * 100
         max_adverse_pct = ((high - entry_price) / entry_price) * 100
@@ -590,7 +590,7 @@ def _review_metrics(
 def _scanner_for_signal_type(signal_type: str) -> str | None:
     if signal_type in {"long", "long_accumulation", "long_breakout"}:
         return "long"
-    if signal_type in {"pump", "pump_exhaustion", "short_breakdown"}:
+    if signal_type in {"pump", "pump_exhaustion", "short_breakdown", "short_long_trap"}:
         return "pump"
     if signal_type.startswith("dump_"):
         return signal_type

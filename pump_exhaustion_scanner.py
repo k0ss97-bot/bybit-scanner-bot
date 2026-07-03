@@ -59,6 +59,7 @@ class ShortBreakdownSignal:
     new_trades: int
     new_spot_trades: int
     consecutive_matches: int
+    setup_type: str = "breakdown"
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,12 @@ class PumpExhaustionScanner:
         spot_cvd_change_pct = pct_change(previous.spot_cvd, current.spot_cvd)
         price_change_window_pct = pct_change(previous.price, current.price)
         required_oi_drop_pct = self._required_oi_drop_pct(drawdown_from_high_pct)
+        cvd_sell_flow_ok = negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
+        )
 
         checks = {
             "price_growth": price_growth_lookback_pct
@@ -331,7 +338,7 @@ class PumpExhaustionScanner:
             "oi_not_rising": oi_change_pct <= self.settings.pump_max_oi_change_pct,
             "oi_drop_required": oi_change_pct <= -required_oi_drop_pct,
             "cvd_delta": cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt,
-            "cvd_pct": cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct,
+            "cvd_pct": cvd_sell_flow_ok,
             "price_window": price_change_window_pct
             <= self.settings.pump_max_price_change_window_pct,
             "binance_volume": (
@@ -382,6 +389,29 @@ class PumpExhaustionScanner:
             )
             if short_signal is not None:
                 return short_signal, None
+
+            long_trap_signal = self._build_short_long_trap_signal(
+                now=now,
+                ticker=ticker,
+                state=state,
+                rejection_reasons=rejection_reasons,
+                checks_base={
+                    "price_growth": checks["price_growth"],
+                    "binance_volume": checks["binance_volume"],
+                },
+                price_growth_lookback_pct=price_growth_lookback_pct,
+                drawdown_from_high_pct=drawdown_from_high_pct,
+                high_price=high_price,
+                oi_change_pct=oi_change_pct,
+                cvd_change_pct=cvd_change_pct,
+                cvd_delta=cvd_delta,
+                spot_cvd_change_pct=spot_cvd_change_pct,
+                spot_cvd_delta=spot_cvd_delta,
+                price_change_window_pct=price_change_window_pct,
+                current=current,
+            )
+            if long_trap_signal is not None:
+                return long_trap_signal, None
 
             state.consecutive_matches = 0
             return None, self._build_watchlist_alert(
@@ -471,7 +501,12 @@ class PumpExhaustionScanner:
             **checks_base,
             "short_oi_rising": oi_change_pct >= self.settings.short_breakdown_min_oi_growth_pct,
             "short_cvd_delta": cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt,
-            "short_cvd_pct": cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct,
+            "short_cvd_pct": negative_flow_ok(
+                cvd_delta,
+                cvd_change_pct,
+                self.settings.pump_min_negative_cvd_delta_usdt,
+                self.settings.pump_min_negative_cvd_change_pct,
+            ),
             "short_price_drop": price_change_window_pct
             <= self.settings.short_breakdown_max_price_change_window_pct,
         }
@@ -526,6 +561,97 @@ class PumpExhaustionScanner:
             consecutive_matches=state.consecutive_matches,
         )
 
+    def _build_short_long_trap_signal(
+        self,
+        *,
+        now: int,
+        ticker: Ticker,
+        state: SymbolState,
+        rejection_reasons: dict[str, int],
+        checks_base: dict[str, bool],
+        price_growth_lookback_pct: float,
+        drawdown_from_high_pct: float,
+        high_price: float,
+        oi_change_pct: float,
+        cvd_change_pct: float,
+        cvd_delta: float,
+        spot_cvd_change_pct: float,
+        spot_cvd_delta: float,
+        price_change_window_pct: float,
+        current: Snapshot,
+    ) -> ShortBreakdownSignal | None:
+        if not self.settings.short_long_trap_enabled:
+            return None
+
+        checks = {
+            **checks_base,
+            "trap_drawdown_started": drawdown_from_high_pct
+            <= -self.settings.short_long_trap_min_drawdown_from_high_pct,
+            "trap_oi_rising": oi_change_pct
+            >= self.settings.short_long_trap_min_oi_growth_pct,
+            "trap_cvd_delta": cvd_delta
+            <= -self.settings.pump_min_negative_cvd_delta_usdt,
+            "trap_cvd_pct": negative_flow_ok(
+                cvd_delta,
+                cvd_change_pct,
+                self.settings.pump_min_negative_cvd_delta_usdt,
+                self.settings.pump_min_negative_cvd_change_pct,
+            ),
+            "trap_price_not_rising": price_change_window_pct
+            <= self.settings.short_long_trap_max_price_change_window_pct,
+        }
+        signal_score = self._score_short_long_trap(
+            price_growth_lookback_pct=price_growth_lookback_pct,
+            drawdown_from_high_pct=drawdown_from_high_pct,
+            oi_change_pct=oi_change_pct,
+            cvd_delta=cvd_delta,
+            cvd_change_pct=cvd_change_pct,
+            price_change_window_pct=price_change_window_pct,
+        )
+
+        if not all(checks.values()) or signal_score < self.settings.short_long_trap_min_signal_score:
+            for reason, passed in checks.items():
+                if not passed:
+                    count_reason(rejection_reasons, reason)
+            if signal_score < self.settings.short_long_trap_min_signal_score:
+                count_reason(rejection_reasons, "trap_score")
+            return None
+
+        if (
+            now - state.last_alert_ts < self.settings.pump_alert_cooldown_minutes * 60
+            and signal_score < state.last_alert_score + self.settings.pump_alert_score_improvement
+        ):
+            count_reason(rejection_reasons, "trap_cooldown")
+            return None
+
+        state.consecutive_matches += 1
+        if state.consecutive_matches < self.settings.pump_consecutive_checks:
+            count_reason(rejection_reasons, "trap_confirmations_waiting")
+            return None
+
+        return ShortBreakdownSignal(
+            symbol=ticker.symbol,
+            window_minutes=self.settings.pump_window_minutes,
+            lookback_days=self.settings.pump_lookback_days,
+            signal_score=signal_score,
+            price_growth_lookback_pct=price_growth_lookback_pct,
+            drawdown_from_high_pct=drawdown_from_high_pct,
+            oi_change_pct=oi_change_pct,
+            cvd_change_pct=cvd_change_pct,
+            cvd_delta_usdt=cvd_delta,
+            spot_cvd_change_pct=spot_cvd_change_pct,
+            spot_cvd_delta_usdt=spot_cvd_delta,
+            funding_rate=ticker.funding_rate,
+            price_change_window_pct=price_change_window_pct,
+            price=ticker.price,
+            high_price_24h=high_price,
+            turnover_24h=ticker.turnover_24h,
+            new_trades=current.new_trades,
+            new_spot_trades=current.new_spot_trades,
+            consecutive_matches=state.consecutive_matches,
+            setup_type="long_trap",
+        )
+
     def _score_signal(
         self,
         *,
@@ -554,12 +680,19 @@ class PumpExhaustionScanner:
         elif oi_change_pct <= -required_oi_drop_pct:
             score += 1
 
-        if (
-            cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt
-            and cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct
+        if strong_negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
         ):
             score += 2
-        elif cvd_delta < 0 and cvd_change_pct < 0:
+        elif negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
+        ):
             score += 1
 
         if price_change_window_pct < 0:
@@ -596,17 +729,73 @@ class PumpExhaustionScanner:
         elif oi_change_pct >= self.settings.short_breakdown_min_oi_growth_pct:
             score += 1
 
-        if (
-            cvd_delta <= -self.settings.pump_min_negative_cvd_delta_usdt
-            and cvd_change_pct <= -self.settings.pump_min_negative_cvd_change_pct
+        if strong_negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
         ):
             score += 2
-        elif cvd_delta < 0 and cvd_change_pct < 0:
+        elif negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
+        ):
             score += 1
 
         if price_change_window_pct <= self.settings.short_breakdown_max_price_change_window_pct * 2:
             score += 2
         elif price_change_window_pct <= self.settings.short_breakdown_max_price_change_window_pct:
+            score += 1
+
+        return min(score, 10)
+
+    def _score_short_long_trap(
+        self,
+        *,
+        price_growth_lookback_pct: float,
+        drawdown_from_high_pct: float,
+        oi_change_pct: float,
+        cvd_delta: float,
+        cvd_change_pct: float,
+        price_change_window_pct: float,
+    ) -> int:
+        score = 0
+        if price_growth_lookback_pct >= self.settings.pump_min_price_growth_lookback_pct * 1.5:
+            score += 2
+        elif price_growth_lookback_pct >= self.settings.pump_min_price_growth_lookback_pct:
+            score += 1
+
+        drawdown = abs(min(0, drawdown_from_high_pct))
+        if drawdown >= self.settings.short_long_trap_min_drawdown_from_high_pct * 2:
+            score += 2
+        elif drawdown >= self.settings.short_long_trap_min_drawdown_from_high_pct:
+            score += 1
+
+        if oi_change_pct >= self.settings.short_long_trap_min_oi_growth_pct * 2:
+            score += 2
+        elif oi_change_pct >= self.settings.short_long_trap_min_oi_growth_pct:
+            score += 1
+
+        if strong_negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
+        ):
+            score += 2
+        elif negative_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            self.settings.pump_min_negative_cvd_delta_usdt,
+            self.settings.pump_min_negative_cvd_change_pct,
+        ):
+            score += 1
+
+        if price_change_window_pct < 0:
+            score += 2
+        elif price_change_window_pct <= self.settings.short_long_trap_max_price_change_window_pct:
             score += 1
 
         return min(score, 10)
@@ -704,7 +893,34 @@ def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:
     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
 
 
+def negative_flow_ok(
+    cvd_delta: float,
+    cvd_change_pct: float,
+    min_negative_delta_usdt: float,
+    min_negative_change_pct: float,
+) -> bool:
+    if cvd_change_pct <= -min_negative_change_pct:
+        return True
+    return cvd_delta <= -min_negative_delta_usdt
+
+
+def strong_negative_flow_ok(
+    cvd_delta: float,
+    cvd_change_pct: float,
+    min_negative_delta_usdt: float,
+    min_negative_change_pct: float,
+) -> bool:
+    if cvd_delta <= -(min_negative_delta_usdt * 2):
+        return True
+    return (
+        cvd_delta <= -min_negative_delta_usdt
+        and cvd_change_pct <= -min_negative_change_pct
+    )
+
+
 def signal_type_name(signal: PumpExhaustionSignal | ShortBreakdownSignal) -> str:
     if isinstance(signal, ShortBreakdownSignal):
+        if getattr(signal, "setup_type", "breakdown") == "long_trap":
+            return "short_long_trap"
         return "short_breakdown"
     return "pump_exhaustion"

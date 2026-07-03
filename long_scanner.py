@@ -21,8 +21,12 @@ class LongSignal:
     base_growth_pct: float
     current_from_base_pct: float
     base_high_price: float
+    base_low_price: float
+    base_range_pct: float
+    price_from_base_high_pct: float
     base_avg_turnover: float
     turnover_ratio_to_base: float
+    price_change_24h_pct: float
     signal_score: int
     oi_change_pct: float
     cvd_change_pct: float
@@ -62,6 +66,8 @@ class BaseStructure:
     base_growth_pct: float
     current_from_base_pct: float
     base_high_price: float
+    base_low_price: float
+    base_range_pct: float
     base_avg_turnover: float
     turnover_ratio_to_base: float
 
@@ -72,6 +78,7 @@ class BaseCacheEntry:
     lookback_days: int
     base_growth_pct: float
     base_high_price: float
+    base_low_price: float
     base_avg_turnover: float
     base_open_price: float
 
@@ -341,6 +348,7 @@ class LongScanner:
             spot_cvd_change_pct=spot_cvd_change_pct,
             price_change_pct=price_change_pct,
             base_structure=base_structure,
+            price_change_24h_pct=ticker.price_change_24h_pct,
         )
         momentum_required_cvd = self._required_cvd_delta(
             ticker,
@@ -357,6 +365,8 @@ class LongScanner:
             "score": signal_score >= self.settings.long_min_signal_score,
             "price_too_high": price_change_pct
             <= self.settings.long_max_price_change_window_pct,
+            "not_24h_overheated": ticker.price_change_24h_pct
+            <= self.settings.long_max_24h_price_change_pct,
             "binance_volume": binance_volume_ok,
         }
 
@@ -499,8 +509,12 @@ class LongScanner:
             base_growth_pct=base_structure.base_growth_pct,
             current_from_base_pct=base_structure.current_from_base_pct,
             base_high_price=base_structure.base_high_price,
+            base_low_price=base_structure.base_low_price,
+            base_range_pct=base_structure.base_range_pct,
+            price_from_base_high_pct=pct_change(base_structure.base_high_price, ticker.price),
             base_avg_turnover=base_structure.base_avg_turnover,
             turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+            price_change_24h_pct=ticker.price_change_24h_pct,
             signal_score=signal_score,
             oi_change_pct=oi_change_pct,
             cvd_change_pct=cvd_change_pct,
@@ -559,6 +573,7 @@ class LongScanner:
             spot_cvd_change_pct=spot_cvd_change_pct,
             price_change_pct=price_change_pct,
             base_structure=base_structure,
+            price_change_24h_pct=ticker.price_change_24h_pct,
         )
         checks = {
             "breakout_enabled": self.settings.long_breakout_enabled,
@@ -571,6 +586,8 @@ class LongScanner:
             "breakout_cvd": cvd_delta >= required_cvd,
             "breakout_not_overextended": base_structure.current_from_base_pct
             <= self.settings.long_breakout_max_current_from_base_pct,
+            "breakout_not_24h_overheated": ticker.price_change_24h_pct
+            <= self.settings.long_max_24h_price_change_pct,
             "breakout_score": signal_score
             >= self.settings.long_breakout_min_signal_score,
             "binance_volume": binance_volume_ok,
@@ -643,6 +660,7 @@ class LongScanner:
                     spot_cvd_change_pct=acc_spot_cvd_change_pct,
                     price_change_pct=acc_price_change_pct,
                     base_structure=base_structure,
+                    price_change_24h_pct=ticker.price_change_24h_pct,
                 )
                 accumulation_checks = {
                     f"acc_{window_minutes}m_enabled": self.settings.long_accumulation_enabled,
@@ -655,6 +673,8 @@ class LongScanner:
                     >= required_cvd,
                     f"acc_{window_minutes}m_not_overextended": base_structure.current_from_base_pct
                     <= self.settings.long_accumulation_max_current_from_base_pct,
+                    f"acc_{window_minutes}m_not_24h_overheated": ticker.price_change_24h_pct
+                    <= self.settings.long_max_24h_price_change_pct,
                     f"acc_{window_minutes}m_score": accumulation_score
                     >= self.settings.long_accumulation_min_signal_score,
                     "binance_volume": binance_volume_ok,
@@ -763,6 +783,8 @@ class LongScanner:
                 base_growth_pct=cached.base_growth_pct,
                 current_from_base_pct=pct_change(cached.base_open_price, ticker.price),
                 base_high_price=cached.base_high_price,
+                base_low_price=cached.base_low_price,
+                base_range_pct=pct_change(cached.base_low_price, cached.base_high_price),
                 base_avg_turnover=cached.base_avg_turnover,
                 turnover_ratio_to_base=safe_ratio(ticker.turnover_24h, cached.base_avg_turnover),
             )
@@ -779,6 +801,7 @@ class LongScanner:
 
         base_open = base_klines[0].open_price
         base_high = max(kline.high_price for kline in base_klines)
+        base_low = min(kline.low_price for kline in base_klines)
         base_avg_turnover = sum(kline.turnover for kline in base_klines) / len(base_klines)
         base_growth_pct = pct_change(base_open, base_high)
         self.base_cache[ticker.symbol] = BaseCacheEntry(
@@ -786,6 +809,7 @@ class LongScanner:
             lookback_days=len(base_klines),
             base_growth_pct=base_growth_pct,
             base_high_price=base_high,
+            base_low_price=base_low,
             base_avg_turnover=base_avg_turnover,
             base_open_price=base_open,
         )
@@ -794,6 +818,8 @@ class LongScanner:
             base_growth_pct=base_growth_pct,
             current_from_base_pct=pct_change(base_open, ticker.price),
             base_high_price=base_high,
+            base_low_price=base_low,
+            base_range_pct=pct_change(base_low, base_high),
             base_avg_turnover=base_avg_turnover,
             turnover_ratio_to_base=safe_ratio(ticker.turnover_24h, base_avg_turnover),
         )
@@ -806,6 +832,7 @@ class LongScanner:
         spot_cvd_change_pct: float,
         price_change_pct: float,
         base_structure: BaseStructure,
+        price_change_24h_pct: float,
     ) -> int:
         score = 0
         if base_structure.base_growth_pct <= 20:
@@ -813,9 +840,17 @@ class LongScanner:
         elif base_structure.base_growth_pct <= self.settings.long_max_price_growth_lookback_pct:
             score += 1
 
+        if base_structure.base_range_pct <= self.settings.long_compression_max_base_range_pct * 0.5:
+            score += 2
+        elif base_structure.base_range_pct <= self.settings.long_compression_max_base_range_pct:
+            score += 1
+
         if base_structure.turnover_ratio_to_base >= 3:
             score += 2
         elif base_structure.turnover_ratio_to_base >= self.settings.long_min_turnover_ratio_to_base:
+            score += 1
+
+        if price_change_24h_pct <= self.settings.long_max_24h_price_change_pct:
             score += 1
 
         if oi_change_pct >= self.settings.oi_threshold_pct * 2:

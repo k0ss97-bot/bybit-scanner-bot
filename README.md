@@ -126,6 +126,8 @@ LONG_MIN_TURNOVER_RATIO_TO_BASE=0.8
 LONG_BASE_CACHE_MINUTES=15
 LONG_MIN_SIGNAL_SCORE=4
 LONG_WATCHLIST_MIN_SCORE=3
+LONG_MAX_24H_PRICE_CHANGE_PCT=35
+LONG_COMPRESSION_MAX_BASE_RANGE_PCT=35
 LONG_MIN_SPOT_CVD_CHANGE_PCT=-5
 LONG_MIN_SPOT_TRADES_FOR_FILTER=20
 LONG_ACCUMULATION_ENABLED=true
@@ -209,6 +211,9 @@ LONG_MOMENTUM_ENABLED=false
 
 `TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240` защищает от спама: по одной монете бот отправляет в Telegram не больше одного сигнала за 4 часа, даже если второй сигнал пришел с другой биржи или другого сканера.
 
+`LONG_MAX_24H_PRICE_CHANGE_PCT=35` не дает long-сигнал, если монета уже сильно улетела за сутки. Это защита от поздних входов на хаях.
+`LONG_COMPRESSION_MAX_BASE_RANGE_PCT=35` добавляет баллы монетам, которые до импульса стояли в более сжатой базе.
+
 Telegram-кнопки:
 
 ```text
@@ -250,7 +255,14 @@ SHORT_BREAKDOWN_ENABLED=true
 SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT=0
 SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT=-0.5
 SHORT_BREAKDOWN_MIN_SIGNAL_SCORE=5
+SHORT_LONG_TRAP_ENABLED=true
+SHORT_LONG_TRAP_MIN_DRAWDOWN_FROM_HIGH_PCT=2
+SHORT_LONG_TRAP_MIN_OI_GROWTH_PCT=2
+SHORT_LONG_TRAP_MAX_PRICE_CHANGE_WINDOW_PCT=1
+SHORT_LONG_TRAP_MIN_SIGNAL_SCORE=5
 ```
+
+`SHORT LONG TRAP` - отдельный шорт-сигнал: после пампа цена уже не продолжает рост, OI растет, а futures CVD уходит в минус. Это сценарий ловушки поздних лонгов или набора шорта до явного breakdown.
 
 Настройки отдельного dump trend scanner:
 
@@ -305,6 +317,32 @@ VERIFY_SSL=false
 ```
 
 Для боевого сервера лучше оставить `VERIFY_SSL=true`.
+
+## Исследование импульсов
+
+Для подбора порогов есть отдельный offline-скрипт:
+
+```bash
+python research/backtest_impulses.py --days 365 --max-symbols 1000 --min-impulse-pct 50 --window-days 2
+```
+
+Он скачивает дневные свечи Binance USDT perpetual, находит монеты, которые дали больше `50%` за `1-2` дня, и сохраняет:
+
+```text
+research/impulse_events.csv
+research/impulse_summary.txt
+```
+
+В таблице считаются:
+
+- диапазон базы перед импульсом;
+- рост/падение базы;
+- всплеск объема относительно базы;
+- proxy taker delta по дневным свечам;
+- сколько тихих дней было перед импульсом;
+- насколько цена была близко к high базы перед выносом.
+
+Важно: публичный Binance REST не дает полную годовую историю OI/taker-flow по всем монетам через статистические endpoints. Поэтому этот скрипт дает price/volume/taker-delta основу, а OI лучше донакапливать live в базе бота или брать из отдельного исторического источника.
 
 ## Как считается CVD
 
