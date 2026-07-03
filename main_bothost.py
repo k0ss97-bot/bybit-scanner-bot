@@ -241,6 +241,8 @@ def format_settings_message(settings) -> str:
         f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n\n"
         "LONG ACCUMULATION:\n"
         f"LONG_ACCUMULATION_ENABLED={str(settings.long_accumulation_enabled).lower()}\n"
+        f"LONG_ACCUMULATION_WINDOW_MINUTES={settings.long_accumulation_window_minutes}\n"
+        f"LONG_ACCUMULATION_MIN_PRICE_CHANGE_PCT={settings.long_accumulation_min_price_change_pct:g}\n"
         f"LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT={settings.long_accumulation_max_price_change_pct:g}\n"
         f"LONG_ACCUMULATION_MIN_OI_CHANGE_PCT={settings.long_accumulation_min_oi_change_pct:g}\n"
         f"LONG_ACCUMULATION_MIN_CVD_DELTA_USDT={settings.long_accumulation_min_cvd_delta_usdt:g}\n"

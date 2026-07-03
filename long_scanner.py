@@ -285,7 +285,11 @@ class LongScanner:
                 new_futures_trades=new_trades,
                 new_spot_trades=new_spot_trades,
             )
-        min_ts = now - self.settings.window_minutes * 60 * 3
+        retention_minutes = max(
+            self.settings.window_minutes,
+            self.settings.long_accumulation_window_minutes,
+        )
+        min_ts = now - retention_minutes * 60 * 3
         state.snapshots = [snapshot for snapshot in state.snapshots if snapshot.ts >= min_ts]
 
     def _build_signal(
@@ -344,24 +348,59 @@ class LongScanner:
 
         setup_type = "momentum"
         if not all(checks.values()):
-            accumulation_checks = {
-                "accumulation_enabled": self.settings.long_accumulation_enabled,
-                "price_flat": -self.settings.price_min_change_pct
-                <= price_change_pct
-                <= self.settings.long_accumulation_max_price_change_pct,
-                "oi_building": oi_change_pct
-                >= self.settings.long_accumulation_min_oi_change_pct,
-                "cvd_building": cvd_delta
-                >= self.settings.long_accumulation_min_cvd_delta_usdt,
-                "not_overextended": base_structure.current_from_base_pct
-                <= self.settings.long_accumulation_max_current_from_base_pct,
-                "score": signal_score >= self.settings.long_accumulation_min_signal_score,
-                "binance_volume": checks["binance_volume"],
-            }
-            if all(accumulation_checks.values()):
-                checks = accumulation_checks
-                setup_type = "accumulation"
+            accumulation_previous = self._find_window_snapshot(
+                current.ts,
+                state,
+                self.settings.long_accumulation_window_minutes,
+            )
+            if accumulation_previous is None:
+                count_reason(rejection_reasons, "acc_warmup_no_window")
+                accumulation_checks = {"accumulation_window": False}
             else:
+                acc_oi_change_pct = pct_change(accumulation_previous.oi, current.oi)
+                acc_cvd_delta = current.cvd - accumulation_previous.cvd
+                acc_cvd_change_pct = pct_change(accumulation_previous.cvd, current.cvd)
+                acc_spot_cvd_delta = current.spot_cvd - accumulation_previous.spot_cvd
+                acc_spot_cvd_change_pct = pct_change(
+                    accumulation_previous.spot_cvd,
+                    current.spot_cvd,
+                )
+                acc_price_change_pct = pct_change(accumulation_previous.price, current.price)
+                accumulation_score = self._score_signal(
+                    oi_change_pct=acc_oi_change_pct,
+                    cvd_change_pct=acc_cvd_change_pct,
+                    cvd_delta=acc_cvd_delta,
+                    spot_cvd_change_pct=acc_spot_cvd_change_pct,
+                    price_change_pct=acc_price_change_pct,
+                    base_structure=base_structure,
+                )
+                accumulation_checks = {
+                    "accumulation_enabled": self.settings.long_accumulation_enabled,
+                    "price_flat": self.settings.long_accumulation_min_price_change_pct
+                    <= acc_price_change_pct
+                    <= self.settings.long_accumulation_max_price_change_pct,
+                    "oi_building": acc_oi_change_pct
+                    >= self.settings.long_accumulation_min_oi_change_pct,
+                    "cvd_building": acc_cvd_delta
+                    >= self.settings.long_accumulation_min_cvd_delta_usdt,
+                    "not_overextended": base_structure.current_from_base_pct
+                    <= self.settings.long_accumulation_max_current_from_base_pct,
+                    "score": accumulation_score
+                    >= self.settings.long_accumulation_min_signal_score,
+                    "binance_volume": checks["binance_volume"],
+                }
+                if all(accumulation_checks.values()):
+                    checks = accumulation_checks
+                    setup_type = "accumulation"
+                    oi_change_pct = acc_oi_change_pct
+                    cvd_delta = acc_cvd_delta
+                    cvd_change_pct = acc_cvd_change_pct
+                    spot_cvd_delta = acc_spot_cvd_delta
+                    spot_cvd_change_pct = acc_spot_cvd_change_pct
+                    price_change_pct = acc_price_change_pct
+                    signal_score = accumulation_score
+
+            if setup_type != "accumulation":
                 state.consecutive_matches = 0
                 for reason, passed in checks.items():
                     if not passed:
@@ -559,8 +598,14 @@ class LongScanner:
 
         return min(score, 10)
 
-    def _find_window_snapshot(self, now: int, state: SymbolState) -> Snapshot | None:
-        target = now - self.settings.window_minutes * 60
+    def _find_window_snapshot(
+        self,
+        now: int,
+        state: SymbolState,
+        window_minutes: int | None = None,
+    ) -> Snapshot | None:
+        window = window_minutes if window_minutes is not None else self.settings.window_minutes
+        target = now - window * 60
         candidates = [snapshot for snapshot in state.snapshots if snapshot.ts <= target]
         if not candidates:
             return None

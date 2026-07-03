@@ -76,6 +76,8 @@ class Settings:
     long_min_spot_cvd_change_pct: float
     long_min_spot_trades_for_filter: int
     long_accumulation_enabled: bool
+    long_accumulation_window_minutes: int
+    long_accumulation_min_price_change_pct: float
     long_accumulation_max_price_change_pct: float
     long_accumulation_min_oi_change_pct: float
     long_accumulation_min_cvd_delta_usdt: float
@@ -177,9 +179,11 @@ def get_settings() -> Settings:
         long_min_spot_cvd_change_pct=_float("LONG_MIN_SPOT_CVD_CHANGE_PCT", -5),
         long_min_spot_trades_for_filter=_int("LONG_MIN_SPOT_TRADES_FOR_FILTER", 20),
         long_accumulation_enabled=_bool("LONG_ACCUMULATION_ENABLED", True),
-        long_accumulation_max_price_change_pct=_float("LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT", 1.5),
-        long_accumulation_min_oi_change_pct=_float("LONG_ACCUMULATION_MIN_OI_CHANGE_PCT", 1),
-        long_accumulation_min_cvd_delta_usdt=_float("LONG_ACCUMULATION_MIN_CVD_DELTA_USDT", 3000),
+        long_accumulation_window_minutes=_int("LONG_ACCUMULATION_WINDOW_MINUTES", 120),
+        long_accumulation_min_price_change_pct=_float("LONG_ACCUMULATION_MIN_PRICE_CHANGE_PCT", -2.5),
+        long_accumulation_max_price_change_pct=_float("LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT", 4),
+        long_accumulation_min_oi_change_pct=_float("LONG_ACCUMULATION_MIN_OI_CHANGE_PCT", 2),
+        long_accumulation_min_cvd_delta_usdt=_float("LONG_ACCUMULATION_MIN_CVD_DELTA_USDT", 10000),
         long_accumulation_max_current_from_base_pct=_float("LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT", 25),
         long_accumulation_min_signal_score=_int("LONG_ACCUMULATION_MIN_SIGNAL_SCORE", 4),
         spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
