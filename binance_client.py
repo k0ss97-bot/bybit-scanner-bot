@@ -5,7 +5,7 @@ import json
 import ssl
 import time
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
@@ -108,6 +108,8 @@ class BinanceClient:
             try:
                 with urlopen(url, timeout=self.timeout_seconds, context=self.ssl_context) as response:
                     return json.loads(response.read().decode("utf-8"))
+            except HTTPError:
+                raise
             except URLError:
                 if attempt < self.max_retries:
                     time.sleep(self.rate_limit_backoff_seconds * (attempt + 1))

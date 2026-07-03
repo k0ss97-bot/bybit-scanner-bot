@@ -55,10 +55,10 @@ class TelegramNotifier:
         }
         if offset is not None:
             payload["offset"] = offset
-        response = self._post("getUpdates", payload)
+        response = self._post("getUpdates", payload, timeout_seconds=timeout_seconds + 5)
         return list(response.get("result", []))
 
-    def _post(self, method: str, payload: dict) -> dict:
+    def _post(self, method: str, payload: dict, timeout_seconds: int | None = None) -> dict:
         payload = json.dumps(
             payload
         ).encode("utf-8")
@@ -69,7 +69,8 @@ class TelegramNotifier:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds, context=self.ssl_context) as response:
+            timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
+            with urlopen(request, timeout=timeout, context=self.ssl_context) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")

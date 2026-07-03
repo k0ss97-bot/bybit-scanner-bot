@@ -550,7 +550,8 @@ def run_status_loop() -> None:
                         menu_keyboard(),
                     )
         except Exception as error:
-            print(f"Status command loop error: {error}", flush=True)
+            if "timed out" not in str(error).lower():
+                print(f"Status command loop error: {error}", flush=True)
 
         time.sleep(settings.status_poll_interval_seconds)
 

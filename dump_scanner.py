@@ -132,8 +132,12 @@ class DumpScanner:
                 else:
                     skipped_symbols += 1
             except Exception as error:
-                failed_symbols += 1
-                print(f"{self.source} {ticker.symbol}: dump scan failed: {error}", flush=True)
+                if self._is_symbol_unavailable_error(error):
+                    skipped_symbols += 1
+                    count_reason(rejection_reasons, "symbol_unavailable")
+                else:
+                    failed_symbols += 1
+                    print(f"{self.source} {ticker.symbol}: dump scan failed: {error}", flush=True)
             finally:
                 if progress_callback is not None and (index % 10 == 0 or index == len(tickers)):
                     progress_callback(index, len(tickers))
@@ -421,6 +425,14 @@ class DumpScanner:
 
     def _history_symbol(self, symbol: str) -> str:
         return f"{self.source}:{symbol}"
+
+    def _is_symbol_unavailable_error(self, error: Exception) -> bool:
+        text = str(error).lower()
+        return self.source == "BINANCE" and (
+            "http error 400" in text
+            or "invalid symbol" in text
+            or "bad request" in text
+        )
 
     def _claim_symbol_alert(
         self,
