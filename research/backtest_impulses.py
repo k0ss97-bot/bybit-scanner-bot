@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 import statistics
+import ssl
 import time
 from typing import Any
 from urllib.parse import urlencode
@@ -41,10 +42,11 @@ def main() -> None:
     args = parse_args()
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    ssl_context = None if parse_bool(args.verify_ssl) else ssl._create_unverified_context()
 
     symbols = parse_symbols(args.symbols)
     if not symbols:
-        symbols = fetch_usdt_perp_symbols(args.base_url)
+        symbols = fetch_usdt_perp_symbols(args.base_url, ssl_context)
     symbols = symbols[: args.max_symbols]
 
     rows: list[dict[str, Any]] = []
@@ -53,7 +55,7 @@ def main() -> None:
 
     for index, symbol in enumerate(symbols, start=1):
         try:
-            klines = fetch_daily_klines(args.base_url, symbol, start_ms, end_ms)
+            klines = fetch_daily_klines(args.base_url, symbol, start_ms, end_ms, ssl_context)
             events = find_impulse_events(
                 symbol=symbol,
                 klines=klines,
@@ -94,6 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-impulse-pct", type=float, default=50)
     parser.add_argument("--min-base-quote-volume", type=float, default=0)
     parser.add_argument("--request-delay", type=float, default=0.12)
+    parser.add_argument("--verify-ssl", default="true", choices=("true", "false"))
     parser.add_argument("--out", default="research/impulse_events.csv")
     parser.add_argument("--summary-out", default="research/impulse_summary.txt")
     return parser.parse_args()
@@ -103,8 +106,12 @@ def parse_symbols(value: str) -> list[str]:
     return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
-def fetch_usdt_perp_symbols(base_url: str) -> list[str]:
-    data = get_json(base_url, "/fapi/v1/exchangeInfo")
+def parse_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def fetch_usdt_perp_symbols(base_url: str, ssl_context: ssl.SSLContext | None) -> list[str]:
+    data = get_json(base_url, "/fapi/v1/exchangeInfo", ssl_context=ssl_context)
     symbols = []
     for item in data.get("symbols", []):
         if (
@@ -121,6 +128,7 @@ def fetch_daily_klines(
     symbol: str,
     start_ms: int,
     end_ms: int,
+    ssl_context: ssl.SSLContext | None,
 ) -> list[DailyKline]:
     raw = get_json(
         base_url,
@@ -132,6 +140,7 @@ def fetch_daily_klines(
             "endTime": end_ms,
             "limit": 1500,
         },
+        ssl_context=ssl_context,
     )
     klines = []
     for item in raw:
@@ -149,9 +158,18 @@ def fetch_daily_klines(
     return sorted(klines, key=lambda item: item.open_time)
 
 
-def get_json(base_url: str, path: str, params: dict[str, Any] | None = None) -> Any:
+def get_json(
+    base_url: str,
+    path: str,
+    params: dict[str, Any] | None = None,
+    ssl_context: ssl.SSLContext | None = None,
+) -> Any:
     query = f"?{urlencode(params)}" if params else ""
-    with urlopen(f"{base_url.rstrip('/')}{path}{query}", timeout=20) as response:
+    with urlopen(
+        f"{base_url.rstrip('/')}{path}{query}",
+        timeout=20,
+        context=ssl_context,
+    ) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

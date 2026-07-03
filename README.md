@@ -326,6 +326,12 @@ VERIFY_SSL=false
 python research/backtest_impulses.py --days 365 --max-symbols 1000 --min-impulse-pct 50 --window-days 2
 ```
 
+Если локальный Python на macOS ругается на сертификаты, запусти так:
+
+```bash
+python research/backtest_impulses.py --days 365 --max-symbols 1000 --min-impulse-pct 50 --window-days 2 --verify-ssl false
+```
+
 Он скачивает дневные свечи Binance USDT perpetual, находит монеты, которые дали больше `50%` за `1-2` дня, и сохраняет:
 
 ```text
