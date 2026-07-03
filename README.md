@@ -109,6 +109,7 @@ PRICE_MIN_CHANGE_PCT=0.3
 REQUIRE_PRICE_HOLD=true
 MIN_NEW_TRADES=50
 CONSECUTIVE_CHECKS=1
+LONG_MOMENTUM_ENABLED=false
 LONG_LOOKBACK_DAYS=7
 LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT=200
 LONG_MAX_PRICE_CHANGE_WINDOW_PCT=25
@@ -146,7 +147,13 @@ BINANCE_MIN_QUOTE_VOLUME_24H_USDT=10000000
 SPOT_CVD_UPDATE_INTERVAL_SECONDS=300
 ```
 
-LONG-бот теперь ищет практический импульс, а не идеальную структуру:
+Старый импульсный LONG выключен по умолчанию:
+
+```text
+LONG_MOMENTUM_ENABLED=false
+```
+
+Если включить `LONG_MOMENTUM_ENABLED=true`, бот снова будет искать практический импульс:
 
 ```text
 жестко: цена за окно растет минимум на PRICE_MIN_CHANGE_PCT

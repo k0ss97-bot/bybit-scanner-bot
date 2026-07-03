@@ -66,6 +66,7 @@ class Settings:
     require_price_hold: bool
     min_new_trades: int
     consecutive_checks: int
+    long_momentum_enabled: bool
     long_lookback_days: int
     long_max_price_growth_lookback_pct: float
     long_max_price_change_window_pct: float
@@ -169,6 +170,7 @@ def get_settings() -> Settings:
         require_price_hold=_bool("REQUIRE_PRICE_HOLD", True),
         min_new_trades=_int("MIN_NEW_TRADES", 50),
         consecutive_checks=_int("CONSECUTIVE_CHECKS", 1),
+        long_momentum_enabled=_bool("LONG_MOMENTUM_ENABLED", False),
         long_lookback_days=_int("LONG_LOOKBACK_DAYS", 7),
         long_max_price_growth_lookback_pct=_float("LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT", 200),
         long_max_price_change_window_pct=_float("LONG_MAX_PRICE_CHANGE_WINDOW_PCT", 25),

@@ -235,6 +235,7 @@ def format_settings_message(settings) -> str:
         f"CVD_THRESHOLD_PCT={settings.cvd_threshold_pct:g}\n"
         f"MIN_CVD_DELTA_USDT={settings.min_cvd_delta_usdt:g}\n"
         f"MIN_TURNOVER_24H_USDT={settings.min_turnover_24h_usdt:g}\n"
+        f"LONG_MOMENTUM_ENABLED={str(settings.long_momentum_enabled).lower()}\n"
         f"LONG_LOOKBACK_DAYS={settings.long_lookback_days}\n"
         f"LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT={settings.long_max_price_growth_lookback_pct:g}\n"
         f"LONG_MIN_TURNOVER_RATIO_TO_BASE={settings.long_min_turnover_ratio_to_base:g}\n"

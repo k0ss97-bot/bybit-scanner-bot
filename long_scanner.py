@@ -331,6 +331,7 @@ class LongScanner:
         cvd_flow_ok = cvd_delta >= self.settings.min_cvd_delta_usdt
 
         checks = {
+            "momentum_enabled": self.settings.long_momentum_enabled,
             "price_momentum": price_momentum_ok,
             "cvd_delta": cvd_flow_ok,
             "score": signal_score >= self.settings.long_min_signal_score,
