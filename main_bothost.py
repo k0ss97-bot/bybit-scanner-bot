@@ -252,6 +252,7 @@ def format_settings_message(settings) -> str:
         f"DUMP_ENABLED={str(settings.dump_enabled).lower()}\n"
         f"DUMP_MIN_TURNOVER_24H_USDT={settings.dump_min_turnover_24h_usdt:g}\n"
         f"DUMP_MAX_SYMBOLS={settings.dump_max_symbols}\n"
+        f"DUMP_STRUCTURE_CACHE_MINUTES={settings.dump_structure_cache_minutes}\n"
         f"DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.dump_min_price_growth_lookback_pct:g}\n"
         f"DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.dump_min_drawdown_from_high_pct:g}\n"
         f"DUMP_MIN_PRICE_DROP_WINDOW_PCT={settings.dump_min_price_drop_window_pct:g}\n"

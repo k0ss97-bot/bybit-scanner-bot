@@ -107,6 +107,7 @@ class Settings:
     dump_window_minutes: int
     dump_lookback_days: int
     dump_scan_interval_seconds: int
+    dump_structure_cache_minutes: int
     dump_min_turnover_24h_usdt: float
     dump_max_symbols: int
     dump_min_price_growth_lookback_pct: float
@@ -200,9 +201,10 @@ def get_settings() -> Settings:
         dump_enabled=_bool("DUMP_ENABLED", True),
         dump_window_minutes=_int("DUMP_WINDOW_MINUTES", 15),
         dump_lookback_days=_int("DUMP_LOOKBACK_DAYS", 2),
-        dump_scan_interval_seconds=_int("DUMP_SCAN_INTERVAL_SECONDS", 60),
+        dump_scan_interval_seconds=_int("DUMP_SCAN_INTERVAL_SECONDS", 120),
+        dump_structure_cache_minutes=_int("DUMP_STRUCTURE_CACHE_MINUTES", 30),
         dump_min_turnover_24h_usdt=_float("DUMP_MIN_TURNOVER_24H_USDT", 2000000),
-        dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 60),
+        dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 40),
         dump_min_price_growth_lookback_pct=_float("DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 15),
         dump_min_drawdown_from_high_pct=_float("DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 4),
         dump_min_price_drop_window_pct=_float("DUMP_MIN_PRICE_DROP_WINDOW_PCT", 0.5),

@@ -17,6 +17,13 @@ SYMBOL_ALERTS: dict[str, tuple[int, str, int]] = {}
 
 
 @dataclass(frozen=True)
+class DumpStructureCacheEntry:
+    ts: int
+    price_growth_lookback_pct: float
+    high_price: float
+
+
+@dataclass(frozen=True)
 class DumpSignal:
     source: str
     symbol: str
@@ -77,6 +84,7 @@ class DumpScanner:
         self.store = store
         self.settings = settings
         self.history = history
+        self.structure_cache: dict[str, DumpStructureCacheEntry] = {}
 
     def scan_once(self, progress_callback=None) -> DumpScanResult:
         now = int(time.time())
@@ -177,7 +185,7 @@ class DumpScanner:
 
     def _get_open_interest(self, ticker: Ticker | BinanceTicker) -> float:
         if isinstance(self.client, BinanceClient):
-            return self.client.get_open_interest(ticker.symbol)
+            return float(ticker.open_interest)
         return float(ticker.open_interest)
 
     def _update_cvd(self, symbol: str, state: SymbolState) -> int:
@@ -401,6 +409,16 @@ class DumpScanner:
         return min(score, 10)
 
     def _get_dump_structure(self, symbol: str, price: float) -> tuple[float, float, float] | None:
+        now = int(time.time())
+        cache_ttl = max(1, self.settings.dump_structure_cache_minutes) * 60
+        cached = self.structure_cache.get(symbol)
+        if cached is not None and now - cached.ts < cache_ttl:
+            return (
+                cached.price_growth_lookback_pct,
+                pct_change(cached.high_price, price),
+                cached.high_price,
+            )
+
         limit = max(3, self.settings.dump_lookback_days + 1)
         klines = self.client.get_daily_klines(symbol, limit=limit)
         if len(klines) < self.settings.dump_lookback_days:
@@ -411,7 +429,13 @@ class DumpScanner:
         high_price = max(kline.high_price for kline in lookback)
         if base_open <= 0 or high_price <= 0:
             return None
-        return pct_change(base_open, high_price), pct_change(high_price, price), high_price
+        price_growth_lookback_pct = pct_change(base_open, high_price)
+        self.structure_cache[symbol] = DumpStructureCacheEntry(
+            ts=now,
+            price_growth_lookback_pct=price_growth_lookback_pct,
+            high_price=high_price,
+        )
+        return price_growth_lookback_pct, pct_change(high_price, price), high_price
 
     def _find_window_snapshot(self, now: int, state: SymbolState) -> Snapshot | None:
         target = now - self.settings.dump_window_minutes * 60
