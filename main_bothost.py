@@ -258,7 +258,9 @@ def format_settings_message(settings) -> str:
         f"SCAN_INTERVAL_SECONDS={settings.scan_interval_seconds}\n"
         f"PUMP_SCAN_INTERVAL_SECONDS={settings.pump_scan_interval_seconds}\n"
         f"BYBIT_MIN_REQUEST_INTERVAL_SECONDS={settings.bybit_min_request_interval_seconds:g}\n"
-        f"SPOT_CVD_UPDATE_INTERVAL_SECONDS={settings.spot_cvd_update_interval_seconds}\n\n"
+        f"SPOT_CVD_UPDATE_INTERVAL_SECONDS={settings.spot_cvd_update_interval_seconds}\n"
+        f"HISTORY_SNAPSHOT_RETENTION_DAYS={settings.history_snapshot_retention_days}\n"
+        f"WATCHLIST_RETENTION_DAYS={settings.watchlist_retention_days}\n"
         f"TELEGRAM_SYMBOL_COOLDOWN_MINUTES={settings.telegram_symbol_cooldown_minutes}\n\n"
         "LONG:\n"
         f"OI_THRESHOLD_PCT={settings.oi_threshold_pct:g}\n"
@@ -269,7 +271,9 @@ def format_settings_message(settings) -> str:
         f"LONG_LOOKBACK_DAYS={settings.long_lookback_days}\n"
         f"LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT={settings.long_max_price_growth_lookback_pct:g}\n"
         f"LONG_MIN_TURNOVER_RATIO_TO_BASE={settings.long_min_turnover_ratio_to_base:g}\n"
-        f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n\n"
+        f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n"
+        f"ALERT_COOLDOWN_MINUTES={settings.alert_cooldown_minutes}\n"
+        f"ALERT_SCORE_IMPROVEMENT={settings.alert_score_improvement}\n\n"
         "LONG ACCUMULATION:\n"
         f"LONG_ACCUMULATION_ENABLED={str(settings.long_accumulation_enabled).lower()}\n"
         f"LONG_ACCUMULATION_WINDOW_MINUTES={settings.long_accumulation_window_minutes}\n"
@@ -284,6 +288,8 @@ def format_settings_message(settings) -> str:
         f"PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.pump_min_price_growth_lookback_pct:g}\n"
         f"PUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.pump_min_drawdown_from_high_pct:g}\n"
         f"PUMP_MIN_SIGNAL_SCORE={settings.pump_min_signal_score}\n"
+        f"PUMP_ALERT_COOLDOWN_MINUTES={settings.pump_alert_cooldown_minutes}\n"
+        f"PUMP_ALERT_SCORE_IMPROVEMENT={settings.pump_alert_score_improvement}\n"
         f"SHORT_BREAKDOWN_ENABLED={str(settings.short_breakdown_enabled).lower()}\n"
         f"SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT={settings.short_breakdown_min_oi_growth_pct:g}\n"
         f"SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_breakdown_max_price_change_window_pct:g}\n"
@@ -303,7 +309,10 @@ def format_settings_message(settings) -> str:
         "Фильтры:\n"
         f"BINANCE_CONFIRM_ENABLED={str(settings.binance_confirm_enabled).lower()}\n"
         f"BINANCE_CONFIRMATION_REQUIRED={str(settings.binance_confirmation_required).lower()}\n"
+        f"CANDIDATE_TRACKING_ENABLED={str(settings.candidate_tracking_enabled).lower()}\n"
         f"WATCHLIST_ENABLED={str(settings.watchlist_enabled).lower()}\n"
+        f"WATCHLIST_MAX_ALERTS_PER_SCAN={settings.watchlist_max_alerts_per_scan}\n"
+        f"WATCHLIST_COOLDOWN_MINUTES={settings.watchlist_cooldown_minutes}\n"
         f"STATUS_COMMANDS_ENABLED={str(settings.status_commands_enabled).lower()}"
     )
 
@@ -641,6 +650,10 @@ def run_long_loop() -> None:
                     formatter=format_signal,
                 )
             reviewed = history.update_signal_reviews()
+            history.cleanup_old_data(
+                snapshot_retention_days=settings.history_snapshot_retention_days,
+                watchlist_retention_days=settings.watchlist_retention_days,
+            )
             update_status("LONG", result, reviewed)
             maybe_send_rate_warning("LONG", result.failed_symbols, notifier)
             print(
@@ -710,6 +723,10 @@ def run_pump_loop() -> None:
                         formatter=format_pump_signal,
                     )
             reviewed = history.update_signal_reviews()
+            history.cleanup_old_data(
+                snapshot_retention_days=settings.history_snapshot_retention_days,
+                watchlist_retention_days=settings.watchlist_retention_days,
+            )
             update_status("PUMP", result, reviewed)
             maybe_send_rate_warning("PUMP", result.failed_symbols, notifier)
             print(

@@ -5,10 +5,14 @@ import sqlite3
 import time
 
 
+REVIEW_SCHEMA_VERSION = "scanner-filtered-v1"
+
+
 class HistoryStore:
     def __init__(self, path: str = "data/scanner.db") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._last_cleanup_ts = 0
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -40,6 +44,18 @@ class HistoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_market_snapshots_symbol_ts
                 ON market_snapshots(symbol, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_market_snapshots_scanner_symbol_ts
+                ON market_snapshots(scanner, symbol, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_market_snapshots_ts
+                ON market_snapshots(ts)
                 """
             )
             conn.execute(
@@ -104,6 +120,18 @@ class HistoryStore:
             )
             conn.execute(
                 """
+                CREATE INDEX IF NOT EXISTS idx_watchlist_candidates_scanner_symbol_ts
+                ON watchlist_candidates(scanner, symbol, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_watchlist_candidates_ts
+                ON watchlist_candidates(ts)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS dump_symbol_cooldowns (
                     symbol TEXT PRIMARY KEY,
                     ts INTEGER NOT NULL,
@@ -121,6 +149,65 @@ class HistoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            self._migrate_signal_reviews(conn)
+
+    def _migrate_signal_reviews(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key = ?",
+            ("signal_reviews_version",),
+        ).fetchone()
+        current_version = row[0] if row else ""
+        if current_version == REVIEW_SCHEMA_VERSION:
+            return
+
+        conn.execute("DELETE FROM signal_reviews")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO app_meta (key, value)
+            VALUES (?, ?)
+            """,
+            ("signal_reviews_version", REVIEW_SCHEMA_VERSION),
+        )
+
+    def cleanup_old_data(
+        self,
+        *,
+        now: int | None = None,
+        snapshot_retention_days: int = 7,
+        watchlist_retention_days: int = 7,
+        min_interval_seconds: int = 3600,
+    ) -> int:
+        now = now or int(time.time())
+        if now - self._last_cleanup_ts < min_interval_seconds:
+            return 0
+
+        self._last_cleanup_ts = now
+        deleted = 0
+        with self._connect() as conn:
+            if snapshot_retention_days > 0:
+                snapshot_cutoff = now - snapshot_retention_days * 24 * 60 * 60
+                cursor = conn.execute(
+                    "DELETE FROM market_snapshots WHERE ts < ?",
+                    (snapshot_cutoff,),
+                )
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+            if watchlist_retention_days > 0:
+                watchlist_cutoff = now - watchlist_retention_days * 24 * 60 * 60
+                cursor = conn.execute(
+                    "DELETE FROM watchlist_candidates WHERE ts < ?",
+                    (watchlist_cutoff,),
+                )
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+
+        return deleted
 
     def record_snapshot(
         self,
@@ -304,6 +391,10 @@ class HistoryStore:
             ).fetchall()
 
             for signal_id, signal_type, symbol, signal_ts, entry_price in signals:
+                scanner = _scanner_for_signal_type(signal_type)
+                if scanner is None:
+                    continue
+
                 for horizon_minutes in horizons_minutes:
                     target_ts = signal_ts + horizon_minutes * 60
                     if target_ts > now:
@@ -323,10 +414,10 @@ class HistoryStore:
                         """
                         SELECT ts, price
                         FROM market_snapshots
-                        WHERE symbol = ? AND ts >= ? AND ts <= ?
+                        WHERE scanner = ? AND symbol = ? AND ts >= ? AND ts <= ?
                         ORDER BY ts ASC
                         """,
-                        (symbol, signal_ts, target_ts),
+                        (scanner, symbol, signal_ts, target_ts),
                     ).fetchall()
                     if not snapshots:
                         continue
@@ -403,9 +494,41 @@ class HistoryStore:
         missing_checks: list[str],
         payload: str,
         ts: int | None = None,
-    ) -> None:
+        cooldown_seconds: int = 0,
+    ) -> bool:
         ts = ts or int(time.time())
         with self._connect() as conn:
+            if cooldown_seconds > 0:
+                existing = conn.execute(
+                    """
+                    SELECT id
+                    FROM watchlist_candidates
+                    WHERE scanner = ? AND symbol = ? AND ts >= ?
+                    ORDER BY ts DESC
+                    LIMIT 1
+                    """,
+                    (scanner, symbol, ts - cooldown_seconds),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE watchlist_candidates
+                        SET ts = ?, score = ?, price = ?, passed_checks = ?,
+                            missing_checks = ?, payload = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            ts,
+                            score,
+                            price,
+                            ",".join(passed_checks),
+                            ",".join(missing_checks),
+                            payload,
+                            existing[0],
+                        ),
+                    )
+                    return True
+
             conn.execute(
                 """
                 INSERT INTO watchlist_candidates (
@@ -425,6 +548,7 @@ class HistoryStore:
                     payload,
                 ),
             )
+        return True
 
     def get_recent_watchlist_candidates(self, limit: int = 10) -> list[tuple]:
         with self._connect() as conn:
@@ -461,3 +585,11 @@ def _review_metrics(
     max_favorable_pct = ((high - entry_price) / entry_price) * 100
     max_adverse_pct = ((entry_price - low) / entry_price) * 100
     return move_pct, max_favorable_pct, max_adverse_pct
+
+
+def _scanner_for_signal_type(signal_type: str) -> str | None:
+    if signal_type == "long":
+        return "long"
+    if signal_type in {"pump", "pump_exhaustion"}:
+        return "pump"
+    return None

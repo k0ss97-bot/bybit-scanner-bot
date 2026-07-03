@@ -115,6 +115,11 @@ def main() -> None:
             result = scanner.scan_once()
             for signal in result.signals:
                 safe_send(notifier, format_pump_signal(signal))
+            if scanner.history is not None:
+                scanner.history.cleanup_old_data(
+                    snapshot_retention_days=settings.history_snapshot_retention_days,
+                    watchlist_retention_days=settings.watchlist_retention_days,
+                )
             print(
                 "Pump scan done: "
                 f"symbols={result.scanned_symbols}, "

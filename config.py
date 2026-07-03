@@ -86,6 +86,9 @@ class Settings:
     long_accumulation_max_current_from_base_pct: float
     long_accumulation_min_signal_score: int
     spot_cvd_update_interval_seconds: int
+    candidate_tracking_enabled: bool
+    history_snapshot_retention_days: int
+    watchlist_retention_days: int
     watchlist_enabled: bool
     watchlist_cooldown_minutes: int
     watchlist_max_alerts_per_scan: int
@@ -163,7 +166,7 @@ def get_settings() -> Settings:
         min_cvd_delta_usdt=_float("MIN_CVD_DELTA_USDT", 3000),
         min_turnover_24h_usdt=_float("MIN_TURNOVER_24H_USDT", 1000000),
         max_symbols=_int("MAX_SYMBOLS", 200),
-        alert_cooldown_minutes=_int("ALERT_COOLDOWN_MINUTES", 60),
+        alert_cooldown_minutes=_int("ALERT_COOLDOWN_MINUTES", 240),
         verify_ssl=_bool("VERIFY_SSL", True),
         debug_errors=_bool("DEBUG_ERRORS", False),
         telegram_enabled=_bool("TELEGRAM_ENABLED", True),
@@ -191,10 +194,13 @@ def get_settings() -> Settings:
         long_accumulation_max_current_from_base_pct=_float("LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT", 25),
         long_accumulation_min_signal_score=_int("LONG_ACCUMULATION_MIN_SIGNAL_SCORE", 4),
         spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
+        candidate_tracking_enabled=_bool("CANDIDATE_TRACKING_ENABLED", True),
+        history_snapshot_retention_days=_int("HISTORY_SNAPSHOT_RETENTION_DAYS", 7),
+        watchlist_retention_days=_int("WATCHLIST_RETENTION_DAYS", 7),
         watchlist_enabled=_bool("WATCHLIST_ENABLED", False),
         watchlist_cooldown_minutes=_int("WATCHLIST_COOLDOWN_MINUTES", 120),
         watchlist_max_alerts_per_scan=_int("WATCHLIST_MAX_ALERTS_PER_SCAN", 3),
-        alert_score_improvement=_int("ALERT_SCORE_IMPROVEMENT", 2),
+        alert_score_improvement=_int("ALERT_SCORE_IMPROVEMENT", 1),
         status_commands_enabled=_bool("STATUS_COMMANDS_ENABLED", True),
         status_poll_interval_seconds=_int("STATUS_POLL_INTERVAL_SECONDS", 5),
         pump_scan_interval_seconds=_int("PUMP_SCAN_INTERVAL_SECONDS", 60),
@@ -207,13 +213,13 @@ def get_settings() -> Settings:
         pump_min_negative_cvd_change_pct=_float("PUMP_MIN_NEGATIVE_CVD_CHANGE_PCT", 3),
         pump_min_negative_cvd_delta_usdt=_float("PUMP_MIN_NEGATIVE_CVD_DELTA_USDT", 5000),
         pump_max_price_change_window_pct=_float("PUMP_MAX_PRICE_CHANGE_WINDOW_PCT", 0),
-        pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 2000000),
+        pump_min_turnover_24h_usdt=_float("PUMP_MIN_TURNOVER_24H_USDT", 5000000),
         pump_max_symbols=_int("PUMP_MAX_SYMBOLS", 200),
         pump_min_signal_score=_int("PUMP_MIN_SIGNAL_SCORE", 5),
         pump_watchlist_min_score=_int("PUMP_WATCHLIST_MIN_SCORE", 5),
         pump_consecutive_checks=_int("PUMP_CONSECUTIVE_CHECKS", 1),
-        pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 60),
-        pump_alert_score_improvement=_int("PUMP_ALERT_SCORE_IMPROVEMENT", 2),
+        pump_alert_cooldown_minutes=_int("PUMP_ALERT_COOLDOWN_MINUTES", 240),
+        pump_alert_score_improvement=_int("PUMP_ALERT_SCORE_IMPROVEMENT", 1),
         short_breakdown_enabled=_bool("SHORT_BREAKDOWN_ENABLED", True),
         short_breakdown_min_oi_growth_pct=_float("SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT", 0),
         short_breakdown_max_price_change_window_pct=_float("SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT", -0.5),

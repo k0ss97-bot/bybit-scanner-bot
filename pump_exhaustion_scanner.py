@@ -118,6 +118,8 @@ class PumpExhaustionScanner:
         failed_symbols = 0
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
+        watchlist_limit = max(0, self.settings.watchlist_max_alerts_per_scan)
+        watchlist_cooldown_seconds = max(0, self.settings.watchlist_cooldown_minutes) * 60
 
         for index, ticker in enumerate(tickers, start=1):
             try:
@@ -153,10 +155,10 @@ class PumpExhaustionScanner:
                     signals.append(signal)
                 elif (
                     watchlist_alert is not None
-                    and len(watchlist_alerts) < max(5, self.settings.watchlist_max_alerts_per_scan)
+                    and len(watchlist_alerts) < watchlist_limit
                 ):
                     state.last_watchlist_ts = now
-                    if self.history is not None:
+                    if self.history is not None and self.settings.candidate_tracking_enabled:
                         self.history.record_watchlist_candidate(
                             scanner="pump",
                             symbol=watchlist_alert.symbol,
@@ -166,6 +168,7 @@ class PumpExhaustionScanner:
                             missing_checks=watchlist_alert.missing_checks,
                             payload=str(watchlist_alert),
                             ts=now,
+                            cooldown_seconds=watchlist_cooldown_seconds,
                         )
                     watchlist_alerts.append(watchlist_alert)
                 else:
@@ -396,11 +399,9 @@ class PumpExhaustionScanner:
                 price_change_window_pct=price_change_window_pct,
             )
 
-        if (
-            now - state.last_alert_ts < self.settings.pump_alert_cooldown_minutes * 60
-            and signal_score < state.last_alert_score + self.settings.pump_alert_score_improvement
-        ):
-            count_reason(rejection_reasons, "cooldown")
+        repeat_rejection = self._repeat_alert_rejection(now, state, signal_score)
+        if repeat_rejection is not None:
+            count_reason(rejection_reasons, repeat_rejection)
             return None, None
 
         state.consecutive_matches += 1
@@ -651,6 +652,25 @@ class PumpExhaustionScanner:
             price=ticker.price,
             turnover_24h=ticker.turnover_24h,
         )
+
+    def _repeat_alert_rejection(
+        self,
+        now: int,
+        state: SymbolState,
+        signal_score: int,
+    ) -> str | None:
+        if state.last_alert_ts <= 0:
+            return None
+
+        cooldown_seconds = max(0, self.settings.pump_alert_cooldown_minutes) * 60
+        if now - state.last_alert_ts < cooldown_seconds:
+            return "cooldown"
+
+        required_score = state.last_alert_score + max(1, self.settings.pump_alert_score_improvement)
+        if signal_score < required_score:
+            return "no_score_improvement"
+
+        return None
 
     def _get_pump_structure(self, ticker: Ticker) -> tuple[float, float, float] | None:
         limit = max(3, self.settings.pump_lookback_days + 1)

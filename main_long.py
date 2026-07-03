@@ -115,6 +115,11 @@ def main() -> None:
             for signal in result.signals:
                 notifier.send_signal(signal)
             reviewed = scanner.history.update_signal_reviews() if scanner.history is not None else 0
+            if scanner.history is not None:
+                scanner.history.cleanup_old_data(
+                    snapshot_retention_days=settings.history_snapshot_retention_days,
+                    watchlist_retention_days=settings.watchlist_retention_days,
+                )
             print(
                 "Long scan done: "
                 f"symbols={result.scanned_symbols}, "

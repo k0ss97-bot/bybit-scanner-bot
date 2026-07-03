@@ -1,10 +1,11 @@
-# Bybit LONG Scanner MVP
+# Bybit Scanner
 
-В проекте два отдельных сканера:
+В проекте два сканера:
 
-- `main.py` — LONG scanner;
+- `main.py` — основной вход для Bothost, запускает оба сканера;
+- `main_long.py` — только LONG scanner;
 - `main_pump.py` — pump exhaustion scanner.
-- `main_bothost.py` — оба сканера в одном процессе для хостингов вроде Bothost.
+- `main_bothost.py` — оба сканера в одном процессе для хостингов вроде Bothost; `main.py` просто вызывает его.
 
 Инструкция для запуска на сервере 24/7: [DEPLOY.md](DEPLOY.md).
 
@@ -35,7 +36,9 @@ $DATA_DIR/pump_state.json
 В базе есть:
 
 - `market_snapshots` — снимки цены, OI, futures CVD, spot CVD, funding;
-- `signals` — история найденных сигналов.
+- `signals` — история найденных сигналов;
+- `signal_reviews` — расчет результата сигналов через 1ч/4ч/24ч;
+- `watchlist_candidates` — почти сигналы для кнопки "Ближайшие".
 
 ## Как запустить
 
@@ -67,7 +70,13 @@ TELEGRAM_CHAT_ID=твой_chat_id
 python main.py
 ```
 
-Запустить второго бота, который ищет истощение пампа:
+Запустить только LONG scanner:
+
+```bash
+python main_long.py
+```
+
+Запустить только scanner истощения пампа:
 
 ```bash
 python main_pump.py
@@ -82,14 +91,14 @@ python main_bothost.py
 Проверить только Telegram:
 
 ```bash
-python main.py --test-telegram
+python main_long.py --test-telegram
 python main_pump.py --test-telegram
 ```
 
 Сделать один скан и остановиться:
 
 ```bash
-python main.py --once
+python main_long.py --once
 python main_pump.py --once
 ```
 
@@ -104,7 +113,7 @@ CVD_THRESHOLD_PCT=2
 MIN_CVD_DELTA_USDT=3000
 MIN_TURNOVER_24H_USDT=1000000
 MAX_SYMBOLS=200
-ALERT_COOLDOWN_MINUTES=60
+ALERT_COOLDOWN_MINUTES=240
 PRICE_MIN_CHANGE_PCT=0.3
 REQUIRE_PRICE_HOLD=true
 MIN_NEW_TRADES=50
@@ -133,9 +142,12 @@ TELEGRAM_ENABLED=true
 STARTUP_NOTIFICATIONS=false
 TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240
 WATCHLIST_ENABLED=false
+CANDIDATE_TRACKING_ENABLED=true
+HISTORY_SNAPSHOT_RETENTION_DAYS=7
+WATCHLIST_RETENTION_DAYS=7
 WATCHLIST_COOLDOWN_MINUTES=120
 WATCHLIST_MAX_ALERTS_PER_SCAN=3
-ALERT_SCORE_IMPROVEMENT=2
+ALERT_SCORE_IMPROVEMENT=1
 STATUS_COMMANDS_ENABLED=true
 STATUS_POLL_INTERVAL_SECONDS=5
 BYBIT_MIN_REQUEST_INTERVAL_SECONDS=0.35
@@ -174,6 +186,8 @@ LONG_MOMENTUM_ENABLED=false
 Этот сигнал смотрит не 15 минут, а `LONG_ACCUMULATION_WINDOW_MINUTES`. Так он может увидеть медленный набор позиции, когда цена еще стоит или слегка проседает.
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
+`CANDIDATE_TRACKING_ENABLED=true` означает, что бот копит почти сигналы в базе для кнопки "Ближайшие". `WATCHLIST_ENABLED` оставлен под отдельные Telegram-alerts по watchlist и сейчас не влияет на реальные сигналы.
+`ALERT_COOLDOWN_MINUTES=240` и `ALERT_SCORE_IMPROVEMENT=1` означают, что повторный сигнал по той же монете не придет раньше 4 часов, а после 4 часов придет только если score стал выше минимум на 1.
 
 `TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240` защищает от спама: по одной монете бот отправляет в Telegram не больше одного сигнала за 4 часа, даже если второй сигнал пришел с другой биржи или другого сканера.
 
@@ -207,13 +221,13 @@ PUMP_OI_DROP_RATIO_TO_DRAWDOWN=0.3
 PUMP_MIN_NEGATIVE_CVD_CHANGE_PCT=3
 PUMP_MIN_NEGATIVE_CVD_DELTA_USDT=5000
 PUMP_MAX_PRICE_CHANGE_WINDOW_PCT=0
-PUMP_MIN_TURNOVER_24H_USDT=2000000
+PUMP_MIN_TURNOVER_24H_USDT=5000000
 PUMP_MAX_SYMBOLS=200
 PUMP_MIN_SIGNAL_SCORE=5
 PUMP_WATCHLIST_MIN_SCORE=5
 PUMP_CONSECUTIVE_CHECKS=1
-PUMP_ALERT_COOLDOWN_MINUTES=60
-PUMP_ALERT_SCORE_IMPROVEMENT=2
+PUMP_ALERT_COOLDOWN_MINUTES=240
+PUMP_ALERT_SCORE_IMPROVEMENT=1
 SHORT_BREAKDOWN_ENABLED=true
 SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT=0
 SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT=-0.5
