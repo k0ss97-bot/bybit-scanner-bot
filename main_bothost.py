@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import signal
 import threading
 import time
 import traceback
@@ -28,6 +29,7 @@ SCANNERS = ("LONG", "PUMP", "DUMP BYBIT", "DUMP BINANCE")
 SCANNER_PAUSED = {scanner: False for scanner in SCANNERS}
 WARNING_LOCK = threading.Lock()
 LAST_WARNING_TS: dict[str, int] = {}
+STOP_EVENT = threading.Event()
 
 
 def menu_keyboard() -> dict:
@@ -61,6 +63,24 @@ def safe_send_long_signal(notifier: TelegramNotifier, signal) -> None:
         notifier.send_signal(signal)
     except Exception as error:
         print(f"Telegram send failed: {error}", flush=True)
+
+
+def request_stop(reason: str) -> None:
+    if not STOP_EVENT.is_set():
+        print(f"Shutdown requested: {reason}", flush=True)
+    STOP_EVENT.set()
+
+
+def install_signal_handlers() -> None:
+    def handle_stop(signum, _frame) -> None:
+        request_stop(f"signal {signum}")
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, handle_stop)
+
+
+def wait_or_stop(seconds: float) -> bool:
+    return STOP_EVENT.wait(max(0.0, seconds))
 
 
 def send_signal_with_symbol_cooldown(
@@ -586,7 +606,7 @@ def run_status_loop() -> None:
     notifier = build_notifier(settings)
     history = HistoryStore(data_path("scanner.db"))
     offset = None
-    while True:
+    while not STOP_EVENT.is_set():
         try:
             for update in notifier.get_updates(offset=offset, timeout_seconds=20):
                 offset = int(update["update_id"]) + 1
@@ -644,7 +664,7 @@ def run_status_loop() -> None:
             if "timed out" not in str(error).lower():
                 print(f"Status command loop error: {error}", flush=True)
 
-        time.sleep(settings.status_poll_interval_seconds)
+        wait_or_stop(settings.status_poll_interval_seconds)
 
 
 def run_long_loop() -> None:
@@ -662,10 +682,10 @@ def run_long_loop() -> None:
     scanner.store.load()
     notifier = build_notifier(settings)
 
-    while True:
+    while not STOP_EVENT.is_set():
         if is_paused("LONG"):
             update_paused_status("LONG")
-            time.sleep(settings.scan_interval_seconds)
+            wait_or_stop(settings.scan_interval_seconds)
             continue
         try:
             update_scanning_status("LONG")
@@ -711,7 +731,7 @@ def run_long_loop() -> None:
             else:
                 print("Long scan error. Set DEBUG_ERRORS=true for details.", flush=True)
 
-        time.sleep(settings.scan_interval_seconds)
+        wait_or_stop(settings.scan_interval_seconds)
 
 
 def run_pump_loop() -> None:
@@ -729,10 +749,10 @@ def run_pump_loop() -> None:
     scanner.store.load()
     notifier = build_notifier(settings)
 
-    while True:
+    while not STOP_EVENT.is_set():
         if is_paused("PUMP"):
             update_paused_status("PUMP")
-            time.sleep(settings.pump_scan_interval_seconds)
+            wait_or_stop(settings.pump_scan_interval_seconds)
             continue
         try:
             update_scanning_status("PUMP")
@@ -789,7 +809,7 @@ def run_pump_loop() -> None:
             else:
                 print("Pump scan error. Set DEBUG_ERRORS=true for details.", flush=True)
 
-        time.sleep(settings.pump_scan_interval_seconds)
+        wait_or_stop(settings.pump_scan_interval_seconds)
 
 
 def run_dump_loop(source: str) -> None:
@@ -815,10 +835,10 @@ def run_dump_loop(source: str) -> None:
     scanner.store.load()
     notifier = build_notifier(settings)
 
-    while True:
+    while not STOP_EVENT.is_set():
         if is_paused(scanner_name):
             update_paused_status(scanner_name)
-            time.sleep(settings.dump_scan_interval_seconds)
+            wait_or_stop(settings.dump_scan_interval_seconds)
             continue
         try:
             update_scanning_status(scanner_name)
@@ -856,10 +876,11 @@ def run_dump_loop(source: str) -> None:
             else:
                 print(f"{scanner_name} scan error. Set DEBUG_ERRORS=true for details.", flush=True)
 
-        time.sleep(settings.dump_scan_interval_seconds)
+        wait_or_stop(settings.dump_scan_interval_seconds)
 
 
 def main() -> None:
+    install_signal_handlers()
     settings = get_settings()
     print(
         "Config check: "
@@ -868,28 +889,40 @@ def main() -> None:
         f"chat_id_present={bool(settings.telegram_chat_id)}",
         flush=True,
     )
-    long_thread = threading.Thread(target=run_long_loop, name="long-scanner")
-    pump_thread = threading.Thread(target=run_pump_loop, name="pump-scanner")
+    long_thread = threading.Thread(target=run_long_loop, name="long-scanner", daemon=True)
+    pump_thread = threading.Thread(target=run_pump_loop, name="pump-scanner", daemon=True)
     dump_bybit_thread = threading.Thread(
         target=run_dump_loop,
         args=("BYBIT",),
         name="dump-bybit-scanner",
+        daemon=True,
     )
     dump_binance_thread = threading.Thread(
         target=run_dump_loop,
         args=("BINANCE",),
         name="dump-binance-scanner",
+        daemon=True,
     )
     status_thread = threading.Thread(target=run_status_loop, name="status-commands", daemon=True)
-    long_thread.start()
-    pump_thread.start()
-    dump_bybit_thread.start()
-    dump_binance_thread.start()
+    worker_threads = [
+        long_thread,
+        pump_thread,
+        dump_bybit_thread,
+        dump_binance_thread,
+    ]
+    for thread in worker_threads:
+        thread.start()
     status_thread.start()
-    long_thread.join()
-    pump_thread.join()
-    dump_bybit_thread.join()
-    dump_binance_thread.join()
+
+    while not STOP_EVENT.is_set():
+        if not any(thread.is_alive() for thread in worker_threads):
+            print("All scanner threads stopped.", flush=True)
+            break
+        wait_or_stop(1)
+
+    for thread in worker_threads:
+        thread.join(timeout=5)
+    print("Bot stopped.", flush=True)
 
 
 def build_bybit_client(settings) -> BybitClient:
