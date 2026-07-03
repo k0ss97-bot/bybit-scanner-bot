@@ -62,6 +62,7 @@ class Settings:
     verify_ssl: bool
     debug_errors: bool
     telegram_enabled: bool
+    telegram_symbol_cooldown_minutes: int
     price_min_change_pct: float
     require_price_hold: bool
     min_new_trades: int
@@ -166,6 +167,7 @@ def get_settings() -> Settings:
         verify_ssl=_bool("VERIFY_SSL", True),
         debug_errors=_bool("DEBUG_ERRORS", False),
         telegram_enabled=_bool("TELEGRAM_ENABLED", True),
+        telegram_symbol_cooldown_minutes=_int("TELEGRAM_SYMBOL_COOLDOWN_MINUTES", 240),
         price_min_change_pct=_float("PRICE_MIN_CHANGE_PCT", 0.3),
         require_price_hold=_bool("REQUIRE_PRICE_HOLD", True),
         min_new_trades=_int("MIN_NEW_TRADES", 50),

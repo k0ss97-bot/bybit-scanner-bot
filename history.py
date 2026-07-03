@@ -112,6 +112,15 @@ class HistoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_symbol_cooldowns (
+                    symbol TEXT PRIMARY KEY,
+                    ts INTEGER NOT NULL,
+                    signal_type TEXT NOT NULL
+                )
+                """
+            )
 
     def record_snapshot(
         self,
@@ -235,6 +244,45 @@ class HistoryStore:
                 (symbol, ts, source, score),
             )
             return True, None, None, None
+
+    def claim_telegram_symbol_alert(
+        self,
+        *,
+        symbol: str,
+        ts: int,
+        signal_type: str,
+        cooldown_minutes: int,
+    ) -> tuple[bool, str | None, int | None]:
+        cooldown_seconds = cooldown_minutes * 60
+        if cooldown_seconds <= 0:
+            return True, None, None
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            previous = conn.execute(
+                """
+                SELECT ts, signal_type
+                FROM telegram_symbol_cooldowns
+                WHERE symbol = ?
+                """,
+                (symbol,),
+            ).fetchone()
+            if previous is not None:
+                previous_ts, previous_signal_type = previous
+                if ts - int(previous_ts) < cooldown_seconds:
+                    return False, str(previous_signal_type), int(previous_ts)
+
+            conn.execute(
+                """
+                INSERT INTO telegram_symbol_cooldowns (symbol, ts, signal_type)
+                VALUES (?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    ts = excluded.ts,
+                    signal_type = excluded.signal_type
+                """,
+                (symbol, ts, signal_type),
+            )
+            return True, None, None
 
     def update_signal_reviews(
         self,

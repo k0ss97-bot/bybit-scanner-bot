@@ -18,6 +18,7 @@ from telegram import (
     TelegramNotifier,
     format_dump_signal,
     format_pump_signal,
+    format_signal,
     format_short_breakdown_signal,
 )
 
@@ -60,6 +61,34 @@ def safe_send_long_signal(notifier: TelegramNotifier, signal) -> None:
         notifier.send_signal(signal)
     except Exception as error:
         print(f"Telegram send failed: {error}", flush=True)
+
+
+def send_signal_with_symbol_cooldown(
+    *,
+    notifier: TelegramNotifier,
+    history: HistoryStore,
+    settings,
+    signal,
+    signal_type: str,
+    formatter,
+) -> None:
+    symbol = str(getattr(signal, "symbol", ""))
+    now = int(time.time())
+    allowed, previous_type, previous_ts = history.claim_telegram_symbol_alert(
+        symbol=symbol,
+        ts=now,
+        signal_type=signal_type,
+        cooldown_minutes=settings.telegram_symbol_cooldown_minutes,
+    )
+    if not allowed:
+        age_minutes = int((now - int(previous_ts or now)) / 60)
+        print(
+            f"Telegram skip {symbol}: cooldown after {previous_type}, age={age_minutes}m",
+            flush=True,
+        )
+        return
+
+    safe_send_message(notifier, formatter(signal))
 
 
 def build_notifier(settings) -> TelegramNotifier:
@@ -230,6 +259,7 @@ def format_settings_message(settings) -> str:
         f"PUMP_SCAN_INTERVAL_SECONDS={settings.pump_scan_interval_seconds}\n"
         f"BYBIT_MIN_REQUEST_INTERVAL_SECONDS={settings.bybit_min_request_interval_seconds:g}\n"
         f"SPOT_CVD_UPDATE_INTERVAL_SECONDS={settings.spot_cvd_update_interval_seconds}\n\n"
+        f"TELEGRAM_SYMBOL_COOLDOWN_MINUTES={settings.telegram_symbol_cooldown_minutes}\n\n"
         "LONG:\n"
         f"OI_THRESHOLD_PCT={settings.oi_threshold_pct:g}\n"
         f"CVD_THRESHOLD_PCT={settings.cvd_threshold_pct:g}\n"
@@ -597,7 +627,19 @@ def run_long_loop() -> None:
                 )
             )
             for signal in result.signals:
-                safe_send_long_signal(notifier, signal)
+                signal_type = (
+                    "long_accumulation"
+                    if getattr(signal, "setup_type", "momentum") == "accumulation"
+                    else "long"
+                )
+                send_signal_with_symbol_cooldown(
+                    notifier=notifier,
+                    history=history,
+                    settings=settings,
+                    signal=signal,
+                    signal_type=signal_type,
+                    formatter=format_signal,
+                )
             reviewed = history.update_signal_reviews()
             update_status("LONG", result, reviewed)
             maybe_send_rate_warning("LONG", result.failed_symbols, notifier)
@@ -650,9 +692,23 @@ def run_pump_loop() -> None:
             )
             for signal in result.signals:
                 if isinstance(signal, ShortBreakdownSignal):
-                    safe_send_message(notifier, format_short_breakdown_signal(signal))
+                    send_signal_with_symbol_cooldown(
+                        notifier=notifier,
+                        history=history,
+                        settings=settings,
+                        signal=signal,
+                        signal_type="short_breakdown",
+                        formatter=format_short_breakdown_signal,
+                    )
                 else:
-                    safe_send_message(notifier, format_pump_signal(signal))
+                    send_signal_with_symbol_cooldown(
+                        notifier=notifier,
+                        history=history,
+                        settings=settings,
+                        signal=signal,
+                        signal_type="pump_exhaustion",
+                        formatter=format_pump_signal,
+                    )
             reviewed = history.update_signal_reviews()
             update_status("PUMP", result, reviewed)
             maybe_send_rate_warning("PUMP", result.failed_symbols, notifier)
@@ -712,7 +768,14 @@ def run_dump_loop(source: str) -> None:
                 )
             )
             for signal in result.signals:
-                safe_send_message(notifier, format_dump_signal(signal))
+                send_signal_with_symbol_cooldown(
+                    notifier=notifier,
+                    history=history,
+                    settings=settings,
+                    signal=signal,
+                    signal_type=f"dump_{source.lower()}",
+                    formatter=format_dump_signal,
+                )
             reviewed = history.update_signal_reviews()
             update_status(scanner_name, result, reviewed)
             maybe_send_rate_warning(scanner_name, result.failed_symbols, notifier)

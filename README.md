@@ -131,6 +131,7 @@ VERIFY_SSL=true
 DEBUG_ERRORS=false
 TELEGRAM_ENABLED=true
 STARTUP_NOTIFICATIONS=false
+TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240
 WATCHLIST_ENABLED=false
 WATCHLIST_COOLDOWN_MINUTES=120
 WATCHLIST_MAX_ALERTS_PER_SCAN=3
@@ -173,6 +174,8 @@ LONG_MOMENTUM_ENABLED=false
 Этот сигнал смотрит не 15 минут, а `LONG_ACCUMULATION_WINDOW_MINUTES`. Так он может увидеть медленный набор позиции, когда цена еще стоит или слегка проседает.
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
+
+`TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240` защищает от спама: по одной монете бот отправляет в Telegram не больше одного сигнала за 4 часа, даже если второй сигнал пришел с другой биржи или другого сканера.
 
 Telegram-кнопки:
 
