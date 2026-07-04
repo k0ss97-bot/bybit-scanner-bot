@@ -10,6 +10,8 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
+from liquidity import OrderbookLevel, OrderbookLiquidity, calculate_orderbook_liquidity
+
 
 @dataclass(frozen=True)
 class Ticker:
@@ -140,6 +142,39 @@ class BybitClient:
                 )
             )
         return sorted(klines, key=lambda item: item.start_ms)
+
+    def get_orderbook_liquidity(
+        self,
+        symbol: str,
+        turnover_24h: float,
+        limit: int = 100,
+        depth_pct: float = 1.0,
+        category: str = "linear",
+    ) -> OrderbookLiquidity:
+        data = self._get(
+            "/v5/market/orderbook",
+            {
+                "category": category,
+                "symbol": symbol,
+                "limit": limit,
+            },
+        )
+        result = data["result"]
+        bids = [
+            OrderbookLevel(price=_to_float(item[0]), size=_to_float(item[1]))
+            for item in result.get("b", [])
+        ]
+        asks = [
+            OrderbookLevel(price=_to_float(item[0]), size=_to_float(item[1]))
+            for item in result.get("a", [])
+        ]
+        return calculate_orderbook_liquidity(
+            symbol=symbol,
+            bids=bids,
+            asks=asks,
+            turnover_24h=turnover_24h,
+            depth_pct=depth_pct,
+        )
 
     def _get(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}{path}?{urlencode(params)}"

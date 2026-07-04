@@ -78,6 +78,10 @@ WATCHLIST_MAX_ALERTS_PER_SCAN=3
 ALERT_SCORE_IMPROVEMENT=1
 STATUS_COMMANDS_ENABLED=true
 STATUS_POLL_INTERVAL_SECONDS=5
+ORDERBOOK_ENABLED=true
+ORDERBOOK_LIMIT=100
+ORDERBOOK_DEPTH_PCT=1
+ORDERBOOK_CACHE_SECONDS=300
 
 PUMP_SCAN_INTERVAL_SECONDS=60
 PUMP_WINDOW_MINUTES=15
@@ -134,6 +138,7 @@ BINANCE_MIN_QUOTE_VOLUME_24H_USDT=10000000
 ```
 
 `ALERT_COOLDOWN_MINUTES=240` и `PUMP_ALERT_COOLDOWN_MINUTES=240` убирают повторный спам по одной монете. Повтор возможен только после 4 часов и только если сила сигнала стала выше минимум на `1`.
+`ORDERBOOK_ENABLED=true` включает спред и глубину стакана в сигналах. Стакан берется только для монет рядом с сигналом, чтобы не упираться в лимиты API.
 
 ## Telegram-кнопки
 

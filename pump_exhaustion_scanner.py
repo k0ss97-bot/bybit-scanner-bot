@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from bybit_client import BybitClient, Ticker
 from config import Settings
 from history import HistoryStore
+from liquidity import OrderbookLiquidity, fragile_liquidity_score, unknown_liquidity
 from long_scanner import pct_change
 from state import Snapshot, StateStore, SymbolState
 
@@ -36,6 +37,10 @@ class PumpExhaustionSignal:
     new_trades: int
     new_spot_trades: int
     consecutive_matches: int
+    liquidity_quality: str = "unknown"
+    spread_bps: float = 0.0
+    depth_1pct_usdt: float = 0.0
+    depth_coverage_1h: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,10 @@ class ShortBreakdownSignal:
     new_trades: int
     new_spot_trades: int
     consecutive_matches: int
+    liquidity_quality: str = "unknown"
+    spread_bps: float = 0.0
+    depth_1pct_usdt: float = 0.0
+    depth_coverage_1h: float = 0.0
     setup_type: str = "breakdown"
 
 
@@ -79,6 +88,10 @@ class PumpWatchlistAlert:
     price_change_window_pct: float
     price: float
     turnover_24h: float
+    liquidity_quality: str = "unknown"
+    spread_bps: float = 0.0
+    depth_1pct_usdt: float = 0.0
+    depth_coverage_1h: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -106,6 +119,7 @@ class PumpExhaustionScanner:
         self.history = history
         self.binance_client = binance_client
         self.no_spot_symbols: set[str] = set()
+        self.liquidity_cache: dict[str, tuple[int, OrderbookLiquidity]] = {}
         self.last_spot_cvd_update_ts: dict[str, int] = {}
 
     def scan_once(self, progress_callback=None) -> PumpScanResult:
@@ -359,6 +373,12 @@ class PumpExhaustionScanner:
             cvd_change_pct=cvd_change_pct,
             price_change_window_pct=price_change_window_pct,
         )
+        liquidity = self._get_liquidity_if_near_signal(
+            ticker,
+            signal_score,
+            self.settings.pump_min_signal_score,
+        )
+        signal_score = min(10, signal_score + fragile_liquidity_score(liquidity))
 
         if not all(checks.values()) or signal_score < self.settings.pump_min_signal_score:
             for reason, passed in checks.items():
@@ -386,6 +406,7 @@ class PumpExhaustionScanner:
                 spot_cvd_delta=spot_cvd_delta,
                 price_change_window_pct=price_change_window_pct,
                 current=current,
+                liquidity=liquidity,
             )
             if short_signal is not None:
                 return short_signal, None
@@ -409,6 +430,7 @@ class PumpExhaustionScanner:
                 spot_cvd_delta=spot_cvd_delta,
                 price_change_window_pct=price_change_window_pct,
                 current=current,
+                liquidity=liquidity,
             )
             if long_trap_signal is not None:
                 return long_trap_signal, None
@@ -427,6 +449,7 @@ class PumpExhaustionScanner:
                 cvd_change_pct=cvd_change_pct,
                 cvd_delta=cvd_delta,
                 price_change_window_pct=price_change_window_pct,
+                liquidity=liquidity,
             )
 
         repeat_rejection = self._repeat_alert_rejection(now, state, signal_score)
@@ -450,6 +473,7 @@ class PumpExhaustionScanner:
                 cvd_change_pct=cvd_change_pct,
                 cvd_delta=cvd_delta,
                 price_change_window_pct=price_change_window_pct,
+                liquidity=liquidity,
             )
 
         return PumpExhaustionSignal(
@@ -473,6 +497,10 @@ class PumpExhaustionScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+            liquidity_quality=liquidity.quality,
+            spread_bps=liquidity.spread_bps,
+            depth_1pct_usdt=liquidity.depth_1pct_usdt,
+            depth_coverage_1h=liquidity.depth_coverage_1h,
         ), None
 
     def _build_short_breakdown_signal(
@@ -493,6 +521,7 @@ class PumpExhaustionScanner:
         spot_cvd_delta: float,
         price_change_window_pct: float,
         current: Snapshot,
+        liquidity: OrderbookLiquidity,
     ) -> ShortBreakdownSignal | None:
         if not self.settings.short_breakdown_enabled:
             return None
@@ -518,6 +547,13 @@ class PumpExhaustionScanner:
             cvd_change_pct=cvd_change_pct,
             price_change_window_pct=price_change_window_pct,
         )
+        if liquidity.quality == "unknown":
+            liquidity = self._get_liquidity_if_near_signal(
+                ticker,
+                signal_score,
+                self.settings.short_breakdown_min_signal_score,
+            )
+        signal_score = min(10, signal_score + fragile_liquidity_score(liquidity))
 
         if not all(checks.values()) or signal_score < self.settings.short_breakdown_min_signal_score:
             for reason, passed in checks.items():
@@ -559,6 +595,10 @@ class PumpExhaustionScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+            liquidity_quality=liquidity.quality,
+            spread_bps=liquidity.spread_bps,
+            depth_1pct_usdt=liquidity.depth_1pct_usdt,
+            depth_coverage_1h=liquidity.depth_coverage_1h,
         )
 
     def _build_short_long_trap_signal(
@@ -579,6 +619,7 @@ class PumpExhaustionScanner:
         spot_cvd_delta: float,
         price_change_window_pct: float,
         current: Snapshot,
+        liquidity: OrderbookLiquidity,
     ) -> ShortBreakdownSignal | None:
         if not self.settings.short_long_trap_enabled:
             return None
@@ -608,6 +649,13 @@ class PumpExhaustionScanner:
             cvd_change_pct=cvd_change_pct,
             price_change_window_pct=price_change_window_pct,
         )
+        if liquidity.quality == "unknown":
+            liquidity = self._get_liquidity_if_near_signal(
+                ticker,
+                signal_score,
+                self.settings.short_long_trap_min_signal_score,
+            )
+        signal_score = min(10, signal_score + fragile_liquidity_score(liquidity))
 
         if not all(checks.values()) or signal_score < self.settings.short_long_trap_min_signal_score:
             for reason, passed in checks.items():
@@ -649,6 +697,10 @@ class PumpExhaustionScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+            liquidity_quality=liquidity.quality,
+            spread_bps=liquidity.spread_bps,
+            depth_1pct_usdt=liquidity.depth_1pct_usdt,
+            depth_coverage_1h=liquidity.depth_coverage_1h,
             setup_type="long_trap",
         )
 
@@ -815,6 +867,7 @@ class PumpExhaustionScanner:
         cvd_change_pct: float,
         cvd_delta: float,
         price_change_window_pct: float,
+        liquidity: OrderbookLiquidity,
     ) -> PumpWatchlistAlert | None:
         if signal_score < self.settings.pump_watchlist_min_score:
             return None
@@ -840,7 +893,45 @@ class PumpExhaustionScanner:
             price_change_window_pct=price_change_window_pct,
             price=ticker.price,
             turnover_24h=ticker.turnover_24h,
+            liquidity_quality=liquidity.quality,
+            spread_bps=liquidity.spread_bps,
+            depth_1pct_usdt=liquidity.depth_1pct_usdt,
+            depth_coverage_1h=liquidity.depth_coverage_1h,
         )
+
+    def _get_liquidity_if_near_signal(
+        self,
+        ticker: Ticker,
+        signal_score: int,
+        min_signal_score: int,
+    ) -> OrderbookLiquidity:
+        if signal_score < max(0, min_signal_score - 2):
+            return unknown_liquidity(ticker.symbol)
+        return self._get_liquidity(ticker)
+
+    def _get_liquidity(self, ticker: Ticker) -> OrderbookLiquidity:
+        if not self.settings.orderbook_enabled:
+            return unknown_liquidity(ticker.symbol)
+
+        now = int(time.time())
+        cached = self.liquidity_cache.get(ticker.symbol)
+        if cached is not None:
+            ts, liquidity = cached
+            if now - ts < max(1, self.settings.orderbook_cache_seconds):
+                return liquidity
+
+        try:
+            liquidity = self.client.get_orderbook_liquidity(
+                ticker.symbol,
+                turnover_24h=ticker.turnover_24h,
+                limit=self.settings.orderbook_limit,
+                depth_pct=self.settings.orderbook_depth_pct,
+            )
+        except Exception as error:
+            print(f"{ticker.symbol}: liquidity unavailable: {error}", flush=True)
+            liquidity = unknown_liquidity(ticker.symbol)
+        self.liquidity_cache[ticker.symbol] = (now, liquidity)
+        return liquidity
 
     def _repeat_alert_rejection(
         self,

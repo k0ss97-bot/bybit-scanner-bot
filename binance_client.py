@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 from bybit_client import Kline, Trade
+from liquidity import OrderbookLevel, OrderbookLiquidity, calculate_orderbook_liquidity
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,30 @@ class BinanceClient:
                 )
             )
         return sorted(klines, key=lambda item: item.start_ms)
+
+    def get_orderbook_liquidity(
+        self,
+        symbol: str,
+        turnover_24h: float,
+        limit: int = 100,
+        depth_pct: float = 1.0,
+    ) -> OrderbookLiquidity:
+        data = self._get("/fapi/v1/depth", {"symbol": symbol, "limit": limit})
+        bids = [
+            OrderbookLevel(price=_to_float(item[0]), size=_to_float(item[1]))
+            for item in data.get("bids", [])
+        ]
+        asks = [
+            OrderbookLevel(price=_to_float(item[0]), size=_to_float(item[1]))
+            for item in data.get("asks", [])
+        ]
+        return calculate_orderbook_liquidity(
+            symbol=symbol,
+            bids=bids,
+            asks=asks,
+            turnover_24h=turnover_24h,
+            depth_pct=depth_pct,
+        )
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         query = f"?{urlencode(params)}" if params else ""

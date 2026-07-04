@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from bybit_client import BybitClient, Ticker
 from config import Settings
 from history import HistoryStore
+from liquidity import OrderbookLiquidity, liquidity_score, unknown_liquidity
 from state import Snapshot, StateStore, SymbolState
 
 if TYPE_CHECKING:
@@ -40,6 +41,10 @@ class LongSignal:
     new_trades: int
     new_spot_trades: int
     consecutive_matches: int
+    liquidity_quality: str = "unknown"
+    spread_bps: float = 0.0
+    depth_1pct_usdt: float = 0.0
+    depth_coverage_1h: float = 0.0
     setup_type: str = "momentum"
 
 
@@ -58,6 +63,10 @@ class LongWatchlistAlert:
     turnover_ratio_to_base: float
     price: float
     turnover_24h: float
+    liquidity_quality: str = "unknown"
+    spread_bps: float = 0.0
+    depth_1pct_usdt: float = 0.0
+    depth_coverage_1h: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -109,6 +118,7 @@ class LongScanner:
         self.binance_client = binance_client
         self.no_spot_symbols: set[str] = set()
         self.base_cache: dict[str, BaseCacheEntry] = {}
+        self.liquidity_cache: dict[str, tuple[int, OrderbookLiquidity]] = {}
         self.last_spot_cvd_update_ts: dict[str, int] = {}
 
     def scan_once(self, progress_callback=None) -> ScanResult:
@@ -350,6 +360,12 @@ class LongScanner:
             base_structure=base_structure,
             price_change_24h_pct=ticker.price_change_24h_pct,
         )
+        liquidity = self._get_liquidity_if_near_signal(
+            ticker,
+            signal_score,
+            self.settings.long_min_signal_score,
+        )
+        signal_score = min(10, signal_score + liquidity_score(liquidity))
         momentum_required_cvd = self._required_cvd_delta(
             ticker,
             self.settings.window_minutes,
@@ -382,6 +398,7 @@ class LongScanner:
             spot_cvd_change_pct,
             price_change_pct,
             self.settings.window_minutes,
+            liquidity,
         )
 
         if not all(checks.values()):
@@ -396,8 +413,9 @@ class LongScanner:
                 best_watchlist = best_candidate(
                     best_watchlist,
                     (
-                        *breakout_candidate,
+                        *breakout_candidate[:7],
                         self.settings.long_breakout_window_minutes,
+                        breakout_candidate[7],
                     ),
                 )
                 if all(breakout_candidate[1].values()):
@@ -409,6 +427,7 @@ class LongScanner:
                         cvd_delta,
                         spot_cvd_change_pct,
                         price_change_pct,
+                        liquidity,
                     ) = breakout_candidate
                     spot_cvd_delta = current.spot_cvd - self._find_window_snapshot(
                         current.ts,
@@ -433,6 +452,7 @@ class LongScanner:
                     (
                         *accumulation_candidate[:7],
                         accumulation_candidate[8],
+                        accumulation_candidate[9],
                     ),
                 )
                 if all(accumulation_candidate[1].values()):
@@ -446,6 +466,7 @@ class LongScanner:
                         price_change_pct,
                         spot_cvd_delta,
                         signal_window_minutes,
+                        liquidity,
                     ) = accumulation_candidate
                     setup_type = "accumulation"
 
@@ -460,6 +481,7 @@ class LongScanner:
                 best_spot_cvd,
                 best_price,
                 best_window_minutes,
+                best_liquidity,
             ) = best_watchlist
             for reason, passed in best_checks.items():
                 if not passed:
@@ -477,6 +499,7 @@ class LongScanner:
                 price_change_pct=best_price,
                 turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
                 window_minutes=best_window_minutes,
+                liquidity=best_liquidity,
             )
 
         repeat_rejection = self._repeat_alert_rejection(now, state, signal_score)
@@ -500,6 +523,7 @@ class LongScanner:
                 price_change_pct=price_change_pct,
                 turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
                 window_minutes=signal_window_minutes,
+                liquidity=liquidity,
             )
 
         return LongSignal(
@@ -528,6 +552,10 @@ class LongScanner:
             new_trades=current.new_trades,
             new_spot_trades=current.new_spot_trades,
             consecutive_matches=state.consecutive_matches,
+            liquidity_quality=liquidity.quality,
+            spread_bps=liquidity.spread_bps,
+            depth_1pct_usdt=liquidity.depth_1pct_usdt,
+            depth_coverage_1h=liquidity.depth_coverage_1h,
             setup_type=setup_type,
         ), None
 
@@ -539,7 +567,7 @@ class LongScanner:
         state: SymbolState,
         base_structure: BaseStructure,
         binance_volume_ok: bool,
-    ) -> tuple[int, dict[str, bool], float, float, float, float, float] | None:
+    ) -> tuple[int, dict[str, bool], float, float, float, float, float, OrderbookLiquidity] | None:
         previous = self._find_window_snapshot(
             current.ts,
             state,
@@ -554,6 +582,7 @@ class LongScanner:
                 0.0,
                 0.0,
                 0.0,
+                unknown_liquidity(ticker.symbol),
             )
 
         oi_change_pct = pct_change(previous.oi, current.oi)
@@ -575,6 +604,12 @@ class LongScanner:
             base_structure=base_structure,
             price_change_24h_pct=ticker.price_change_24h_pct,
         )
+        liquidity = self._get_liquidity_if_near_signal(
+            ticker,
+            signal_score,
+            self.settings.long_breakout_min_signal_score,
+        )
+        signal_score = min(10, signal_score + liquidity_score(liquidity))
         checks = {
             "breakout_enabled": self.settings.long_breakout_enabled,
             "breakout_price": price_change_pct
@@ -600,6 +635,7 @@ class LongScanner:
             cvd_delta,
             spot_cvd_change_pct,
             price_change_pct,
+            liquidity,
         )
 
     def _best_accumulation_candidate(
@@ -611,7 +647,7 @@ class LongScanner:
         base_structure: BaseStructure,
         binance_volume_ok: bool,
         rejection_reasons: dict[str, int],
-    ) -> tuple[int, dict[str, bool], float, float, float, float, float, float, int] | None:
+    ) -> tuple[int, dict[str, bool], float, float, float, float, float, float, int, OrderbookLiquidity] | None:
         best = None
         windows = sorted(
             set(
@@ -637,6 +673,7 @@ class LongScanner:
                     0.0,
                     0.0,
                     window_minutes,
+                    unknown_liquidity(ticker.symbol),
                 )
             else:
                 acc_oi_change_pct = pct_change(accumulation_previous.oi, current.oi)
@@ -662,6 +699,12 @@ class LongScanner:
                     base_structure=base_structure,
                     price_change_24h_pct=ticker.price_change_24h_pct,
                 )
+                liquidity = self._get_liquidity_if_near_signal(
+                    ticker,
+                    accumulation_score,
+                    self.settings.long_accumulation_min_signal_score,
+                )
+                accumulation_score = min(10, accumulation_score + liquidity_score(liquidity))
                 accumulation_checks = {
                     f"acc_{window_minutes}m_enabled": self.settings.long_accumulation_enabled,
                     f"acc_{window_minutes}m_price_flat": self.settings.long_accumulation_min_price_change_pct
@@ -689,6 +732,7 @@ class LongScanner:
                     acc_price_change_pct,
                     acc_spot_cvd_delta,
                     window_minutes,
+                    liquidity,
                 )
 
             best = best_candidate(best, candidate)
@@ -709,6 +753,7 @@ class LongScanner:
         price_change_pct: float,
         turnover_ratio_to_base: float,
         window_minutes: int,
+        liquidity: OrderbookLiquidity,
     ) -> LongWatchlistAlert | None:
         if signal_score < self.settings.long_watchlist_min_score:
             return None
@@ -732,7 +777,45 @@ class LongScanner:
             turnover_ratio_to_base=turnover_ratio_to_base,
             price=ticker.price,
             turnover_24h=ticker.turnover_24h,
+            liquidity_quality=liquidity.quality,
+            spread_bps=liquidity.spread_bps,
+            depth_1pct_usdt=liquidity.depth_1pct_usdt,
+            depth_coverage_1h=liquidity.depth_coverage_1h,
         )
+
+    def _get_liquidity_if_near_signal(
+        self,
+        ticker: Ticker,
+        signal_score: int,
+        min_signal_score: int,
+    ) -> OrderbookLiquidity:
+        if signal_score < max(0, min_signal_score - 2):
+            return unknown_liquidity(ticker.symbol)
+        return self._get_liquidity(ticker)
+
+    def _get_liquidity(self, ticker: Ticker) -> OrderbookLiquidity:
+        if not self.settings.orderbook_enabled:
+            return unknown_liquidity(ticker.symbol)
+
+        now = int(time.time())
+        cached = self.liquidity_cache.get(ticker.symbol)
+        if cached is not None:
+            ts, liquidity = cached
+            if now - ts < max(1, self.settings.orderbook_cache_seconds):
+                return liquidity
+
+        try:
+            liquidity = self.client.get_orderbook_liquidity(
+                ticker.symbol,
+                turnover_24h=ticker.turnover_24h,
+                limit=self.settings.orderbook_limit,
+                depth_pct=self.settings.orderbook_depth_pct,
+            )
+        except Exception as error:
+            print(f"{ticker.symbol}: liquidity unavailable: {error}", flush=True)
+            liquidity = unknown_liquidity(ticker.symbol)
+        self.liquidity_cache[ticker.symbol] = (now, liquidity)
+        return liquidity
 
     def _repeat_alert_rejection(
         self,

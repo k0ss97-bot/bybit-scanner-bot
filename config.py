@@ -63,6 +63,10 @@ class Settings:
     binance_confirm_enabled: bool
     binance_confirmation_required: bool
     binance_min_quote_volume_24h_usdt: float
+    orderbook_enabled: bool
+    orderbook_limit: int
+    orderbook_depth_pct: float
+    orderbook_cache_seconds: int
     scan_interval_seconds: int
     window_minutes: int
     oi_threshold_pct: float
@@ -187,6 +191,10 @@ def get_settings() -> Settings:
         binance_confirm_enabled=_bool("BINANCE_CONFIRM_ENABLED", False),
         binance_confirmation_required=_bool("BINANCE_CONFIRMATION_REQUIRED", False),
         binance_min_quote_volume_24h_usdt=_float("BINANCE_MIN_QUOTE_VOLUME_24H_USDT", 10000000),
+        orderbook_enabled=_bool("ORDERBOOK_ENABLED", True),
+        orderbook_limit=_int("ORDERBOOK_LIMIT", 100),
+        orderbook_depth_pct=_float("ORDERBOOK_DEPTH_PCT", 1.0),
+        orderbook_cache_seconds=_int("ORDERBOOK_CACHE_SECONDS", 300),
         scan_interval_seconds=_int("SCAN_INTERVAL_SECONDS", 60),
         window_minutes=_int("WINDOW_MINUTES", 15),
         oi_threshold_pct=_float("OI_THRESHOLD_PCT", 1),

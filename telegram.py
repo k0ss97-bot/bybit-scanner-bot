@@ -77,6 +77,21 @@ class TelegramNotifier:
             raise RuntimeError(f"Telegram error {error.code}: {body}") from error
 
 
+def format_liquidity(signal) -> str:
+    quality = getattr(signal, "liquidity_quality", "unknown")
+    spread_bps = getattr(signal, "spread_bps", 0.0)
+    depth_1pct = getattr(signal, "depth_1pct_usdt", 0.0)
+    depth_coverage = getattr(signal, "depth_coverage_1h", 0.0)
+    if quality == "unknown":
+        return "Ликвидность: unknown"
+    return (
+        f"Ликвидность: {quality}\n"
+        f"Спред: {spread_bps:.2f} bps\n"
+        f"Глубина 1%: {depth_1pct:,.0f} USDT\n"
+        f"Покрытие 1h объема: x{depth_coverage:.2f}"
+    )
+
+
 def format_signal(signal: LongSignal) -> str:
     setup_type = getattr(signal, "setup_type", "momentum")
     if setup_type == "accumulation":
@@ -111,7 +126,8 @@ def format_signal(signal: LongSignal) -> str:
         f"Funding: {signal.funding_rate * 100:.4f}%\n"
         f"Price: {signal.price_change_pct:+.2f}%\n"
         f"Last price: {signal.price:g}\n"
-        f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n\n"
+        f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
+        f"{format_liquidity(signal)}\n\n"
         f"New trades: {signal.new_trades}\n"
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
@@ -139,6 +155,7 @@ def format_pump_signal(signal: PumpExhaustionSignal) -> str:
         f"Last price: {signal.price:g}\n"
         f"High разгона: {signal.high_price_24h:g}\n"
         f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
+        f"{format_liquidity(signal)}\n"
         f"New trades: {signal.new_trades}\n"
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
@@ -172,6 +189,7 @@ def format_short_breakdown_signal(signal: ShortBreakdownSignal) -> str:
         f"Last price: {signal.price:g}\n"
         f"High пампа: {signal.high_price_24h:g}\n"
         f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
+        f"{format_liquidity(signal)}\n"
         f"New trades: {signal.new_trades}\n"
         f"New spot trades: {signal.new_spot_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
@@ -221,7 +239,8 @@ def format_long_watchlist(alert: LongWatchlistAlert) -> str:
         f"Price: {alert.price_change_pct:+.2f}%\n"
         f"Оборот к базе: x{alert.turnover_ratio_to_base:.2f}\n"
         f"Last price: {alert.price:g}\n"
-        f"Turnover 24h: {alert.turnover_24h:,.0f} USDT\n\n"
+        f"Turnover 24h: {alert.turnover_24h:,.0f} USDT\n"
+        f"{format_liquidity(alert)}\n\n"
         f"Прошло: {', '.join(alert.passed_checks)}\n"
         f"Не хватает: {', '.join(alert.missing_checks)}"
     )
@@ -242,7 +261,8 @@ def format_pump_watchlist(alert: PumpWatchlistAlert) -> str:
         f"Futures CVD delta: {alert.cvd_delta_usdt:,.0f} USDT\n"
         f"Price за окно: {alert.price_change_window_pct:+.2f}%\n"
         f"Last price: {alert.price:g}\n"
-        f"Turnover 24h: {alert.turnover_24h:,.0f} USDT\n\n"
+        f"Turnover 24h: {alert.turnover_24h:,.0f} USDT\n"
+        f"{format_liquidity(alert)}\n\n"
         f"Прошло: {', '.join(alert.passed_checks)}\n"
         f"Не хватает: {', '.join(alert.missing_checks)}"
     )

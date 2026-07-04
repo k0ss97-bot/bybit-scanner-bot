@@ -147,6 +147,10 @@ LONG_BREAKOUT_MIN_OI_CHANGE_PCT=1
 LONG_BREAKOUT_MIN_CVD_DELTA_USDT=5000
 LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT=40
 LONG_BREAKOUT_MIN_SIGNAL_SCORE=5
+ORDERBOOK_ENABLED=true
+ORDERBOOK_LIMIT=100
+ORDERBOOK_DEPTH_PCT=1
+ORDERBOOK_CACHE_SECONDS=300
 VERIFY_SSL=true
 DEBUG_ERRORS=false
 TELEGRAM_ENABLED=true
@@ -213,6 +217,7 @@ LONG_MOMENTUM_ENABLED=false
 
 `LONG_MAX_24H_PRICE_CHANGE_PCT=35` не дает long-сигнал, если монета уже сильно улетела за сутки. Это защита от поздних входов на хаях.
 `LONG_COMPRESSION_MAX_BASE_RANGE_PCT=35` добавляет баллы монетам, которые до импульса стояли в более сжатой базе.
+`ORDERBOOK_ENABLED=true` добавляет проверку стакана. В сигнале появятся спред, глубина 1% и оценка ликвидности: `fragile`, `stressed` или `healthy`.
 
 Telegram-кнопки:
 
