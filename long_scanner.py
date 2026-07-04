@@ -372,7 +372,12 @@ class LongScanner:
             self.settings.min_cvd_delta_usdt,
         )
         price_momentum_ok = price_change_pct >= self.settings.price_min_change_pct
-        cvd_flow_ok = cvd_delta >= momentum_required_cvd
+        cvd_flow_ok = positive_flow_ok(
+            cvd_delta,
+            cvd_change_pct,
+            momentum_required_cvd,
+            self.settings.cvd_threshold_pct,
+        )
 
         checks = {
             "momentum_enabled": self.settings.long_momentum_enabled,
@@ -618,7 +623,12 @@ class LongScanner:
             <= self.settings.long_breakout_max_price_change_pct,
             "breakout_oi": oi_change_pct
             >= self.settings.long_breakout_min_oi_change_pct,
-            "breakout_cvd": cvd_delta >= required_cvd,
+            "breakout_cvd": positive_flow_ok(
+                cvd_delta,
+                cvd_change_pct,
+                required_cvd,
+                self.settings.cvd_threshold_pct,
+            ),
             "breakout_not_overextended": base_structure.current_from_base_pct
             <= self.settings.long_breakout_max_current_from_base_pct,
             "breakout_not_24h_overheated": ticker.price_change_24h_pct
@@ -712,8 +722,12 @@ class LongScanner:
                     <= self.settings.long_accumulation_max_price_change_pct,
                     f"acc_{window_minutes}m_oi_building": acc_oi_change_pct
                     >= self.settings.long_accumulation_min_oi_change_pct,
-                    f"acc_{window_minutes}m_cvd_building": acc_cvd_delta
-                    >= required_cvd,
+                    f"acc_{window_minutes}m_cvd_building": positive_flow_ok(
+                        acc_cvd_delta,
+                        acc_cvd_change_pct,
+                        required_cvd,
+                        self.settings.cvd_threshold_pct,
+                    ),
                     f"acc_{window_minutes}m_not_overextended": base_structure.current_from_base_pct
                     <= self.settings.long_accumulation_max_current_from_base_pct,
                     f"acc_{window_minutes}m_not_24h_overheated": ticker.price_change_24h_pct
@@ -1002,3 +1016,14 @@ def best_candidate(current: tuple | None, candidate: tuple) -> tuple:
 
 def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:
     rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+
+
+def positive_flow_ok(
+    cvd_delta: float,
+    cvd_change_pct: float,
+    min_delta_usdt: float,
+    min_change_pct: float,
+) -> bool:
+    if cvd_delta >= min_delta_usdt:
+        return True
+    return cvd_delta > 0 and cvd_change_pct >= min_change_pct
