@@ -128,7 +128,7 @@ class LongScanner:
             progress_callback(0, len(tickers))
         binance_tickers = self._get_binance_tickers()
         signals = []
-        watchlist_alerts = []
+        watchlist_candidates = []
         failed_symbols = 0
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
@@ -171,24 +171,9 @@ class LongScanner:
                             payload=str(signal),
                         )
                     signals.append(signal)
-                elif (
-                    watchlist_alert is not None
-                    and len(watchlist_alerts) < watchlist_limit
-                ):
+                elif watchlist_alert is not None:
                     state.last_watchlist_ts = now
-                    if self.history is not None and self.settings.candidate_tracking_enabled:
-                        self.history.record_watchlist_candidate(
-                            scanner="long",
-                            symbol=watchlist_alert.symbol,
-                            score=watchlist_alert.signal_score,
-                            price=watchlist_alert.price,
-                            passed_checks=watchlist_alert.passed_checks,
-                            missing_checks=watchlist_alert.missing_checks,
-                            payload=str(watchlist_alert),
-                            ts=now,
-                            cooldown_seconds=watchlist_cooldown_seconds,
-                        )
-                    watchlist_alerts.append(watchlist_alert)
+                    watchlist_candidates.append(watchlist_alert)
                 else:
                     skipped_symbols += 1
             except Exception as error:
@@ -197,6 +182,25 @@ class LongScanner:
             finally:
                 if progress_callback is not None and (index % 10 == 0 or index == len(tickers)):
                     progress_callback(index, len(tickers))
+
+        watchlist_alerts = sorted(
+            watchlist_candidates,
+            key=watchlist_alert_rank,
+            reverse=True,
+        )[:watchlist_limit]
+        if self.history is not None and self.settings.candidate_tracking_enabled:
+            for watchlist_alert in watchlist_alerts:
+                self.history.record_watchlist_candidate(
+                    scanner="long",
+                    symbol=watchlist_alert.symbol,
+                    score=watchlist_alert.signal_score,
+                    price=watchlist_alert.price,
+                    passed_checks=watchlist_alert.passed_checks,
+                    missing_checks=watchlist_alert.missing_checks,
+                    payload=str(watchlist_alert),
+                    ts=now,
+                    cooldown_seconds=watchlist_cooldown_seconds,
+                )
 
         self.store.save()
         return ScanResult(
@@ -394,17 +398,19 @@ class LongScanner:
         setup_type = "momentum"
         signal_window_minutes = self.settings.window_minutes
         signal_checks = checks
-        best_watchlist = (
-            signal_score,
-            checks,
-            oi_change_pct,
-            cvd_change_pct,
-            cvd_delta,
-            spot_cvd_change_pct,
-            price_change_pct,
-            self.settings.window_minutes,
-            liquidity,
-        )
+        best_watchlist = None
+        if self.settings.long_momentum_enabled:
+            best_watchlist = (
+                signal_score,
+                checks,
+                oi_change_pct,
+                cvd_change_pct,
+                cvd_delta,
+                spot_cvd_change_pct,
+                price_change_pct,
+                self.settings.window_minutes,
+                liquidity,
+            )
 
         if not all(checks.values()):
             breakout_candidate = self._build_breakout_candidate(
@@ -477,6 +483,9 @@ class LongScanner:
 
         if setup_type == "momentum" and not all(checks.values()):
             state.consecutive_matches = 0
+            if best_watchlist is None:
+                count_reason(rejection_reasons, "no_watchlist_candidate")
+                return None, None
             (
                 best_score,
                 best_checks,
@@ -774,7 +783,7 @@ class LongScanner:
 
         passed_checks = [name for name, passed in checks.items() if passed]
         missing_checks = [name for name, passed in checks.items() if not passed]
-        if len(passed_checks) < 3:
+        if len(passed_checks) < 2:
             return None
 
         return LongWatchlistAlert(
@@ -1003,7 +1012,7 @@ def candidate_rank(candidate: tuple) -> tuple[int, int]:
     score = int(candidate[0])
     checks = candidate[1]
     passed_count = sum(1 for passed in checks.values() if passed)
-    return passed_count, score
+    return score, passed_count
 
 
 def best_candidate(current: tuple | None, candidate: tuple) -> tuple:
@@ -1012,6 +1021,10 @@ def best_candidate(current: tuple | None, candidate: tuple) -> tuple:
     if candidate_rank(candidate) > candidate_rank(current):
         return candidate
     return current
+
+
+def watchlist_alert_rank(alert: LongWatchlistAlert) -> tuple[int, int]:
+    return alert.signal_score, len(alert.passed_checks)
 
 
 def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:

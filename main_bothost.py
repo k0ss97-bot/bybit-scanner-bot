@@ -299,6 +299,7 @@ def format_settings_message(settings) -> str:
         f"LONG_COMPRESSION_MAX_BASE_RANGE_PCT={settings.long_compression_max_base_range_pct:g}\n"
         f"LONG_MIN_TURNOVER_RATIO_TO_BASE={settings.long_min_turnover_ratio_to_base:g}\n"
         f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n"
+        f"LONG_WATCHLIST_MIN_SCORE={settings.long_watchlist_min_score}\n"
         f"ALERT_COOLDOWN_MINUTES={settings.alert_cooldown_minutes}\n"
         f"ALERT_SCORE_IMPROVEMENT={settings.alert_score_improvement}\n\n"
         "LONG ACCUMULATION:\n"

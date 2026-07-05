@@ -129,7 +129,7 @@ class PumpExhaustionScanner:
             progress_callback(0, len(tickers))
         binance_tickers = self._get_binance_tickers()
         signals = []
-        watchlist_alerts = []
+        watchlist_candidates = []
         failed_symbols = 0
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
@@ -168,24 +168,9 @@ class PumpExhaustionScanner:
                             payload=str(signal),
                         )
                     signals.append(signal)
-                elif (
-                    watchlist_alert is not None
-                    and len(watchlist_alerts) < watchlist_limit
-                ):
+                elif watchlist_alert is not None:
                     state.last_watchlist_ts = now
-                    if self.history is not None and self.settings.candidate_tracking_enabled:
-                        self.history.record_watchlist_candidate(
-                            scanner="pump",
-                            symbol=watchlist_alert.symbol,
-                            score=watchlist_alert.signal_score,
-                            price=watchlist_alert.price,
-                            passed_checks=watchlist_alert.passed_checks,
-                            missing_checks=watchlist_alert.missing_checks,
-                            payload=str(watchlist_alert),
-                            ts=now,
-                            cooldown_seconds=watchlist_cooldown_seconds,
-                        )
-                    watchlist_alerts.append(watchlist_alert)
+                    watchlist_candidates.append(watchlist_alert)
                 else:
                     skipped_symbols += 1
             except Exception as error:
@@ -194,6 +179,25 @@ class PumpExhaustionScanner:
             finally:
                 if progress_callback is not None and (index % 10 == 0 or index == len(tickers)):
                     progress_callback(index, len(tickers))
+
+        watchlist_alerts = sorted(
+            watchlist_candidates,
+            key=watchlist_alert_rank,
+            reverse=True,
+        )[:watchlist_limit]
+        if self.history is not None and self.settings.candidate_tracking_enabled:
+            for watchlist_alert in watchlist_alerts:
+                self.history.record_watchlist_candidate(
+                    scanner="pump",
+                    symbol=watchlist_alert.symbol,
+                    score=watchlist_alert.signal_score,
+                    price=watchlist_alert.price,
+                    passed_checks=watchlist_alert.passed_checks,
+                    missing_checks=watchlist_alert.missing_checks,
+                    payload=str(watchlist_alert),
+                    ts=now,
+                    cooldown_seconds=watchlist_cooldown_seconds,
+                )
 
         self.store.save()
         return PumpScanResult(
@@ -1015,3 +1019,7 @@ def signal_type_name(signal: PumpExhaustionSignal | ShortBreakdownSignal) -> str
             return "short_long_trap"
         return "short_breakdown"
     return "pump_exhaustion"
+
+
+def watchlist_alert_rank(alert: PumpWatchlistAlert) -> tuple[int, int]:
+    return alert.signal_score, len(alert.passed_checks)
