@@ -94,7 +94,10 @@ def format_liquidity(signal) -> str:
 
 def format_signal(signal: LongSignal) -> str:
     setup_type = getattr(signal, "setup_type", "momentum")
-    if setup_type == "accumulation":
+    if setup_type == "squeeze":
+        title = "🟢 LONG SQUEEZE"
+        reason = "Причина: монета выходит из длинной сжатой базы на всплеске объема. Отрицательный funding и продавливающие шорты при держащейся цене — топливо для шорт-сквиза."
+    elif setup_type == "accumulation":
         title = "🟢 LONG ACCUMULATION"
         reason = "Причина: цена еще почти не ушла вверх, но OI и futures CVD уже набираются. Возможная фаза накопления перед импульсом."
     elif setup_type == "breakout":
@@ -118,8 +121,8 @@ def format_signal(signal: LongSignal) -> str:
         f"Low базы: {signal.base_low_price:g}\n"
         f"Оборот к базе: x{signal.turnover_ratio_to_base:.2f}\n"
         f"Средний оборот базы: {signal.base_avg_turnover:,.0f} USDT\n"
-        f"OI: +{signal.oi_change_pct:.2f}%\n"
-        f"Futures CVD: +{signal.cvd_change_pct:.2f}%\n"
+        f"OI: {signal.oi_change_pct:+.2f}%\n"
+        f"Futures CVD: {signal.cvd_change_pct:+.2f}%\n"
         f"Futures CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
         f"Spot CVD: {signal.spot_cvd_change_pct:+.2f}%\n"
         f"Spot CVD delta: {signal.spot_cvd_delta_usdt:,.0f} USDT\n"

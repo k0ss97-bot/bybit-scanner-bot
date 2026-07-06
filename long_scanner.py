@@ -118,8 +118,12 @@ class LongScanner:
         self.binance_client = binance_client
         self.no_spot_symbols: set[str] = set()
         self.base_cache: dict[str, BaseCacheEntry] = {}
+        self.squeeze_base_cache: dict[str, BaseCacheEntry] = {}
         self.liquidity_cache: dict[str, tuple[int, OrderbookLiquidity]] = {}
         self.last_spot_cvd_update_ts: dict[str, int] = {}
+        self.volume_burst_cache: dict[str, tuple[int, float]] = {}
+        self.oi_trend_cache: dict[str, tuple[int, tuple[float, float] | None]] = {}
+        self.last_sleeper_scan_ts = 0
 
     def scan_once(self, progress_callback=None) -> ScanResult:
         now = int(time.time())
@@ -156,6 +160,7 @@ class LongScanner:
                         signal_type = {
                             "accumulation": "long_accumulation",
                             "breakout": "long_breakout",
+                            "squeeze": "long_squeeze",
                         }.get(signal.setup_type, "long")
                         self.history.record_signal(
                             signal_type=signal_type,
@@ -213,14 +218,44 @@ class LongScanner:
         )
 
     def _select_tickers(self) -> list[Ticker]:
-        tickers = [
+        all_tickers = self.client.get_linear_tickers()
+        hot = [
             ticker
-            for ticker in self.client.get_linear_tickers()
+            for ticker in all_tickers
             if ticker.turnover_24h >= self.settings.min_turnover_24h_usdt
             and ticker.open_interest > 0
         ]
-        tickers.sort(key=lambda item: item.turnover_24h, reverse=True)
-        return tickers[: self.settings.max_symbols]
+        hot.sort(key=lambda item: item.turnover_24h, reverse=True)
+        hot = hot[: self.settings.max_symbols]
+        return hot + self._select_sleeper_tickers(all_tickers, hot)
+
+    def _select_sleeper_tickers(
+        self,
+        all_tickers: list[Ticker],
+        hot: list[Ticker],
+    ) -> list[Ticker]:
+        if not (
+            self.settings.sleeper_scan_enabled
+            and self.settings.long_squeeze_enabled
+            and self.settings.sleeper_max_symbols > 0
+        ):
+            return []
+
+        now = int(time.time())
+        if now - self.last_sleeper_scan_ts < self.settings.sleeper_scan_interval_minutes * 60:
+            return []
+        self.last_sleeper_scan_ts = now
+
+        hot_symbols = {ticker.symbol for ticker in hot}
+        sleepers = [
+            ticker
+            for ticker in all_tickers
+            if ticker.symbol not in hot_symbols
+            and ticker.open_interest > 0
+            and ticker.turnover_24h >= self.settings.sleeper_min_turnover_24h_usdt
+        ]
+        sleepers.sort(key=lambda item: item.turnover_24h, reverse=True)
+        return sleepers[: self.settings.sleeper_max_symbols]
 
     def _get_binance_tickers(self) -> dict[str, BinanceTicker]:
         if not self.settings.binance_confirm_enabled or self.binance_client is None:
@@ -315,6 +350,7 @@ class LongScanner:
             self.settings.window_minutes,
             self.settings.long_accumulation_window_minutes,
             self.settings.long_breakout_window_minutes,
+            self.settings.long_squeeze_window_minutes,
             *self.settings.long_accumulation_windows_minutes,
         )
         min_ts = now - retention_minutes * 60 * 3
@@ -398,6 +434,7 @@ class LongScanner:
         setup_type = "momentum"
         signal_window_minutes = self.settings.window_minutes
         signal_checks = checks
+        signal_base = base_structure
         best_watchlist = None
         if self.settings.long_momentum_enabled:
             best_watchlist = (
@@ -482,6 +519,39 @@ class LongScanner:
                     setup_type = "accumulation"
 
         if setup_type == "momentum" and not all(checks.values()):
+            squeeze_candidate = self._build_squeeze_candidate(
+                ticker=ticker,
+                current=current,
+                state=state,
+                binance_volume_ok=binance_volume_ok,
+                rejection_reasons=rejection_reasons,
+            )
+            if squeeze_candidate is not None:
+                best_watchlist = best_candidate(
+                    best_watchlist,
+                    (
+                        *squeeze_candidate[:7],
+                        squeeze_candidate[8],
+                        squeeze_candidate[9],
+                    ),
+                )
+                if all(squeeze_candidate[1].values()):
+                    (
+                        signal_score,
+                        signal_checks,
+                        oi_change_pct,
+                        cvd_change_pct,
+                        cvd_delta,
+                        spot_cvd_change_pct,
+                        price_change_pct,
+                        spot_cvd_delta,
+                        signal_window_minutes,
+                        liquidity,
+                    ) = squeeze_candidate[:10]
+                    signal_base = squeeze_candidate[10]
+                    setup_type = "squeeze"
+
+        if setup_type == "momentum" and not all(checks.values()):
             state.consecutive_matches = 0
             if best_watchlist is None:
                 count_reason(rejection_reasons, "no_watchlist_candidate")
@@ -535,7 +605,7 @@ class LongScanner:
                 cvd_delta=cvd_delta,
                 spot_cvd_change_pct=spot_cvd_change_pct,
                 price_change_pct=price_change_pct,
-                turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+                turnover_ratio_to_base=signal_base.turnover_ratio_to_base,
                 window_minutes=signal_window_minutes,
                 liquidity=liquidity,
             )
@@ -543,15 +613,15 @@ class LongScanner:
         return LongSignal(
             symbol=ticker.symbol,
             window_minutes=signal_window_minutes,
-            lookback_days=base_structure.lookback_days,
-            base_growth_pct=base_structure.base_growth_pct,
-            current_from_base_pct=base_structure.current_from_base_pct,
-            base_high_price=base_structure.base_high_price,
-            base_low_price=base_structure.base_low_price,
-            base_range_pct=base_structure.base_range_pct,
-            price_from_base_high_pct=pct_change(base_structure.base_high_price, ticker.price),
-            base_avg_turnover=base_structure.base_avg_turnover,
-            turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
+            lookback_days=signal_base.lookback_days,
+            base_growth_pct=signal_base.base_growth_pct,
+            current_from_base_pct=signal_base.current_from_base_pct,
+            base_high_price=signal_base.base_high_price,
+            base_low_price=signal_base.base_low_price,
+            base_range_pct=signal_base.base_range_pct,
+            price_from_base_high_pct=pct_change(signal_base.base_high_price, ticker.price),
+            base_avg_turnover=signal_base.base_avg_turnover,
+            turnover_ratio_to_base=signal_base.turnover_ratio_to_base,
             price_change_24h_pct=ticker.price_change_24h_pct,
             signal_score=signal_score,
             oi_change_pct=oi_change_pct,
@@ -761,6 +831,215 @@ class LongScanner:
             best = best_candidate(best, candidate)
         return best
 
+    def _build_squeeze_candidate(
+        self,
+        *,
+        ticker: Ticker,
+        current: Snapshot,
+        state: SymbolState,
+        binance_volume_ok: bool,
+        rejection_reasons: dict[str, int],
+    ) -> tuple | None:
+        if not self.settings.long_squeeze_enabled:
+            return None
+
+        base_structure = self._get_squeeze_base_structure(ticker)
+        if base_structure is None:
+            count_reason(rejection_reasons, "squeeze_no_base")
+            return None
+
+        previous = self._find_window_snapshot(
+            current.ts,
+            state,
+            self.settings.long_squeeze_window_minutes,
+        )
+        if previous is None:
+            count_reason(rejection_reasons, "squeeze_warmup_no_window")
+            return None
+
+        oi_change_pct = pct_change(previous.oi, current.oi)
+        cvd_delta = current.cvd - previous.cvd
+        cvd_change_pct = pct_change(previous.cvd, current.cvd)
+        spot_cvd_delta = current.spot_cvd - previous.spot_cvd
+        spot_cvd_change_pct = pct_change(previous.spot_cvd, current.spot_cvd)
+        price_change_pct = pct_change(previous.price, current.price)
+        price_from_base_high_pct = pct_change(base_structure.base_high_price, ticker.price)
+
+        base_compressed = (
+            base_structure.base_range_pct <= self.settings.long_squeeze_max_base_range_pct
+        )
+        near_base_high = (
+            price_from_base_high_pct >= -self.settings.long_squeeze_max_dist_from_base_high_pct
+        )
+        # Часовой kline запрашиваем только когда монета уже у high сжатой базы,
+        # чтобы не жечь API на каждом символе.
+        burst_ratio = 0.0
+        if base_compressed and near_base_high:
+            burst_ratio = self._get_volume_burst_ratio(ticker, base_structure)
+
+        oi_trend = self._get_oi_trend(ticker.symbol, current.ts)
+        signal_score = self._score_squeeze(
+            base_structure=base_structure,
+            price_from_base_high_pct=price_from_base_high_pct,
+            burst_ratio=burst_ratio,
+            funding_rate=ticker.funding_rate,
+            oi_trend=oi_trend,
+            oi_change_pct=oi_change_pct,
+            cvd_delta=cvd_delta,
+            spot_cvd_change_pct=spot_cvd_change_pct,
+            price_change_pct=price_change_pct,
+            price_change_24h_pct=ticker.price_change_24h_pct,
+        )
+        liquidity = self._get_liquidity_if_near_signal(
+            ticker,
+            signal_score,
+            self.settings.long_squeeze_min_signal_score,
+        )
+        signal_score = min(10, signal_score + liquidity_score(liquidity))
+
+        checks = {
+            "squeeze_base_compressed": base_compressed,
+            "squeeze_near_base_high": near_base_high,
+            "squeeze_volume_burst": burst_ratio
+            >= self.settings.long_squeeze_min_volume_burst_ratio,
+            "squeeze_price_rising": self.settings.long_squeeze_min_price_change_pct
+            <= price_change_pct
+            <= self.settings.long_squeeze_max_price_change_pct,
+            "squeeze_score": signal_score >= self.settings.long_squeeze_min_signal_score,
+            "binance_volume": binance_volume_ok,
+        }
+        return (
+            signal_score,
+            checks,
+            oi_change_pct,
+            cvd_change_pct,
+            cvd_delta,
+            spot_cvd_change_pct,
+            price_change_pct,
+            spot_cvd_delta,
+            self.settings.long_squeeze_window_minutes,
+            liquidity,
+            base_structure,
+        )
+
+    def _score_squeeze(
+        self,
+        *,
+        base_structure: BaseStructure,
+        price_from_base_high_pct: float,
+        burst_ratio: float,
+        funding_rate: float,
+        oi_trend: tuple[float, float] | None,
+        oi_change_pct: float,
+        cvd_delta: float,
+        spot_cvd_change_pct: float,
+        price_change_pct: float,
+        price_change_24h_pct: float,
+    ) -> int:
+        score = 0
+        max_range = self.settings.long_squeeze_max_base_range_pct
+        if base_structure.base_range_pct <= max_range * 0.6:
+            score += 2
+        elif base_structure.base_range_pct <= max_range:
+            score += 1
+
+        if price_from_base_high_pct >= 0:
+            score += 2
+        elif price_from_base_high_pct >= -self.settings.long_squeeze_max_dist_from_base_high_pct:
+            score += 1
+
+        min_burst = self.settings.long_squeeze_min_volume_burst_ratio
+        if burst_ratio >= min_burst * 2:
+            score += 2
+        elif burst_ratio >= min_burst:
+            score += 1
+
+        # Отрицательный funding = толпа шортов = топливо сквиза.
+        strong_negative_funding = self.settings.long_squeeze_strong_negative_funding_pct / 100
+        if funding_rate <= strong_negative_funding:
+            score += 2
+        elif funding_rate < 0:
+            score += 1
+
+        # Многочасовой набор OI при еще плоской цене (из SQLite-истории).
+        if oi_trend is not None:
+            trend_oi_change_pct, trend_price_change_pct = oi_trend
+            min_oi_trend = self.settings.long_squeeze_min_oi_trend_pct
+            if trend_price_change_pct <= 15:
+                if trend_oi_change_pct >= min_oi_trend * 2:
+                    score += 2
+                elif trend_oi_change_pct >= min_oi_trend:
+                    score += 1
+
+        # Абсорбция: шорты давят (futures CVD в минусе), а цена держится/растет.
+        if cvd_delta < 0 and price_change_pct >= 0:
+            score += 1
+        elif cvd_delta > 0:
+            score += 1
+
+        if spot_cvd_change_pct > 0:
+            score += 1
+
+        if oi_change_pct >= self.settings.oi_threshold_pct:
+            score += 1
+
+        if price_change_pct >= self.settings.long_squeeze_min_price_change_pct * 3:
+            score += 2
+        elif price_change_pct >= self.settings.long_squeeze_min_price_change_pct:
+            score += 1
+
+        if price_change_24h_pct <= self.settings.long_max_24h_price_change_pct:
+            score += 1
+
+        return min(score, 10)
+
+    def _get_volume_burst_ratio(self, ticker: Ticker, base_structure: BaseStructure) -> float:
+        now = int(time.time())
+        cached = self.volume_burst_cache.get(ticker.symbol)
+        if cached is not None and now - cached[0] < 300:
+            return cached[1]
+
+        ratio = 0.0
+        try:
+            klines = self.client.get_klines(ticker.symbol, interval="60", limit=2)
+            if klines:
+                # Текущий час может быть неполным, берем максимум из двух последних.
+                recent_hour_turnover = max(kline.turnover for kline in klines[-2:])
+                base_hourly_turnover = base_structure.base_avg_turnover / 24
+                ratio = safe_ratio(recent_hour_turnover, base_hourly_turnover)
+        except Exception as error:
+            print(f"{ticker.symbol}: volume burst unavailable: {error}", flush=True)
+
+        self.volume_burst_cache[ticker.symbol] = (now, ratio)
+        return ratio
+
+    def _get_oi_trend(self, symbol: str, now: int) -> tuple[float, float] | None:
+        if self.history is None:
+            return None
+
+        cached = self.oi_trend_cache.get(symbol)
+        if cached is not None and now - cached[0] < 600:
+            return cached[1]
+
+        best: tuple[float, float] | None = None
+        try:
+            for hours in (24, 48):
+                trend = self.history.get_trend_change(
+                    scanner="long",
+                    symbol=symbol,
+                    now=now,
+                    hours=hours,
+                )
+                if trend is None:
+                    continue
+                if best is None or trend[0] > best[0]:
+                    best = trend
+        except Exception as error:
+            print(f"{symbol}: OI trend unavailable: {error}", flush=True)
+
+        self.oi_trend_cache[symbol] = (now, best)
+        return best
+
     def _build_watchlist_alert(
         self,
         *,
@@ -880,8 +1159,27 @@ class LongScanner:
         return max(2_000, min(max(configured_min, flow_based_min), turnover_cap))
 
     def _get_base_structure(self, ticker: Ticker) -> BaseStructure | None:
+        return self._build_base_structure(
+            ticker,
+            max(2, self.settings.long_lookback_days),
+            self.base_cache,
+        )
+
+    def _get_squeeze_base_structure(self, ticker: Ticker) -> BaseStructure | None:
+        return self._build_base_structure(
+            ticker,
+            max(7, self.settings.long_squeeze_lookback_days),
+            self.squeeze_base_cache,
+        )
+
+    def _build_base_structure(
+        self,
+        ticker: Ticker,
+        lookback_days: int,
+        cache: dict[str, BaseCacheEntry],
+    ) -> BaseStructure | None:
         now = int(time.time())
-        cached = self.base_cache.get(ticker.symbol)
+        cached = cache.get(ticker.symbol)
         cache_ttl = max(1, self.settings.long_base_cache_minutes) * 60
         if cached is not None and now - cached.ts < cache_ttl:
             return BaseStructure(
@@ -895,7 +1193,6 @@ class LongScanner:
                 turnover_ratio_to_base=safe_ratio(ticker.turnover_24h, cached.base_avg_turnover),
             )
 
-        lookback_days = max(2, self.settings.long_lookback_days)
         klines = self.client.get_daily_klines(ticker.symbol, limit=lookback_days + 1)
         if len(klines) < lookback_days:
             return None
@@ -910,7 +1207,7 @@ class LongScanner:
         base_low = min(kline.low_price for kline in base_klines)
         base_avg_turnover = sum(kline.turnover for kline in base_klines) / len(base_klines)
         base_growth_pct = pct_change(base_open, base_high)
-        self.base_cache[ticker.symbol] = BaseCacheEntry(
+        cache[ticker.symbol] = BaseCacheEntry(
             ts=now,
             lookback_days=len(base_klines),
             base_growth_pct=base_growth_pct,

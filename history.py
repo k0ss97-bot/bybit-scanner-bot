@@ -550,6 +550,51 @@ class HistoryStore:
             )
         return True
 
+    def get_trend_change(
+        self,
+        *,
+        scanner: str,
+        symbol: str,
+        now: int,
+        hours: int,
+        min_coverage_ratio: float = 0.6,
+    ) -> tuple[float, float] | None:
+        """OI and price change over the last N hours from stored snapshots.
+
+        Returns (oi_change_pct, price_change_pct) or None when the stored
+        history covers less than min_coverage_ratio of the requested window.
+        """
+        since = now - hours * 3600
+        with self._connect() as conn:
+            first = conn.execute(
+                """
+                SELECT ts, open_interest, price
+                FROM market_snapshots
+                WHERE scanner = ? AND symbol = ? AND ts >= ?
+                ORDER BY ts ASC
+                LIMIT 1
+                """,
+                (scanner, symbol, since),
+            ).fetchone()
+            last = conn.execute(
+                """
+                SELECT ts, open_interest, price
+                FROM market_snapshots
+                WHERE scanner = ? AND symbol = ? AND ts >= ?
+                ORDER BY ts DESC
+                LIMIT 1
+                """,
+                (scanner, symbol, since),
+            ).fetchone()
+
+        if not first or not last:
+            return None
+        first_ts, first_oi, first_price = first
+        last_ts, last_oi, last_price = last
+        if last_ts - first_ts < hours * 3600 * min_coverage_ratio:
+            return None
+        return _pct_change(first_oi, last_oi), _pct_change(first_price, last_price)
+
     def get_recent_watchlist_candidates(self, limit: int = 10) -> list[tuple]:
         with self._connect() as conn:
             return conn.execute(
@@ -561,6 +606,12 @@ class HistoryStore:
                 """,
                 (limit,),
             ).fetchall()
+
+
+def _pct_change(old: float, new: float) -> float:
+    if old == 0:
+        return 100.0 if new > 0 else 0.0
+    return ((new - old) / abs(old)) * 100
 
 
 def _review_metrics(
@@ -588,7 +639,7 @@ def _review_metrics(
 
 
 def _scanner_for_signal_type(signal_type: str) -> str | None:
-    if signal_type in {"long", "long_accumulation", "long_breakout"}:
+    if signal_type in {"long", "long_accumulation", "long_breakout", "long_squeeze"}:
         return "long"
     if signal_type in {"pump", "pump_exhaustion", "short_breakdown", "short_long_trap"}:
         return "pump"

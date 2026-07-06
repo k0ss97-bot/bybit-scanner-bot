@@ -321,6 +321,22 @@ def format_settings_message(settings) -> str:
         f"LONG_BREAKOUT_MIN_CVD_DELTA_USDT={settings.long_breakout_min_cvd_delta_usdt:g}\n"
         f"LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT={settings.long_breakout_max_current_from_base_pct:g}\n"
         f"LONG_BREAKOUT_MIN_SIGNAL_SCORE={settings.long_breakout_min_signal_score}\n\n"
+        "LONG SQUEEZE:\n"
+        f"LONG_SQUEEZE_ENABLED={str(settings.long_squeeze_enabled).lower()}\n"
+        f"LONG_SQUEEZE_LOOKBACK_DAYS={settings.long_squeeze_lookback_days}\n"
+        f"LONG_SQUEEZE_MAX_BASE_RANGE_PCT={settings.long_squeeze_max_base_range_pct:g}\n"
+        f"LONG_SQUEEZE_MAX_DIST_FROM_BASE_HIGH_PCT={settings.long_squeeze_max_dist_from_base_high_pct:g}\n"
+        f"LONG_SQUEEZE_WINDOW_MINUTES={settings.long_squeeze_window_minutes}\n"
+        f"LONG_SQUEEZE_MIN_PRICE_CHANGE_PCT={settings.long_squeeze_min_price_change_pct:g}\n"
+        f"LONG_SQUEEZE_MAX_PRICE_CHANGE_PCT={settings.long_squeeze_max_price_change_pct:g}\n"
+        f"LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO={settings.long_squeeze_min_volume_burst_ratio:g}\n"
+        f"LONG_SQUEEZE_MIN_SIGNAL_SCORE={settings.long_squeeze_min_signal_score}\n"
+        f"LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT={settings.long_squeeze_strong_negative_funding_pct:g}\n"
+        f"LONG_SQUEEZE_MIN_OI_TREND_PCT={settings.long_squeeze_min_oi_trend_pct:g}\n"
+        f"SLEEPER_SCAN_ENABLED={str(settings.sleeper_scan_enabled).lower()}\n"
+        f"SLEEPER_MIN_TURNOVER_24H_USDT={settings.sleeper_min_turnover_24h_usdt:g}\n"
+        f"SLEEPER_MAX_SYMBOLS={settings.sleeper_max_symbols}\n"
+        f"SLEEPER_SCAN_INTERVAL_MINUTES={settings.sleeper_scan_interval_minutes}\n\n"
         "PUMP:\n"
         f"PUMP_MIN_TURNOVER_24H_USDT={settings.pump_min_turnover_24h_usdt:g}\n"
         f"PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.pump_min_price_growth_lookback_pct:g}\n"
@@ -706,6 +722,7 @@ def run_long_loop() -> None:
                 signal_type = {
                     "accumulation": "long_accumulation",
                     "breakout": "long_breakout",
+                    "squeeze": "long_squeeze",
                 }.get(getattr(signal, "setup_type", "momentum"), "long")
                 send_signal_with_symbol_cooldown(
                     notifier=notifier,

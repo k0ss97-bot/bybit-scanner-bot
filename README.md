@@ -119,7 +119,7 @@ REQUIRE_PRICE_HOLD=true
 MIN_NEW_TRADES=50
 CONSECUTIVE_CHECKS=1
 LONG_MOMENTUM_ENABLED=false
-LONG_LOOKBACK_DAYS=7
+LONG_LOOKBACK_DAYS=14
 LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT=200
 LONG_MAX_PRICE_CHANGE_WINDOW_PCT=25
 LONG_MIN_TURNOVER_RATIO_TO_BASE=0.8
@@ -127,7 +127,7 @@ LONG_BASE_CACHE_MINUTES=15
 LONG_MIN_SIGNAL_SCORE=4
 LONG_WATCHLIST_MIN_SCORE=2
 LONG_MAX_24H_PRICE_CHANGE_PCT=60
-LONG_COMPRESSION_MAX_BASE_RANGE_PCT=35
+LONG_COMPRESSION_MAX_BASE_RANGE_PCT=25
 LONG_MIN_SPOT_CVD_CHANGE_PCT=-5
 LONG_MIN_SPOT_TRADES_FOR_FILTER=20
 LONG_ACCUMULATION_ENABLED=true
@@ -147,6 +147,21 @@ LONG_BREAKOUT_MIN_OI_CHANGE_PCT=0.5
 LONG_BREAKOUT_MIN_CVD_DELTA_USDT=3000
 LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT=60
 LONG_BREAKOUT_MIN_SIGNAL_SCORE=4
+LONG_SQUEEZE_ENABLED=true
+LONG_SQUEEZE_LOOKBACK_DAYS=21
+LONG_SQUEEZE_MAX_BASE_RANGE_PCT=25
+LONG_SQUEEZE_MAX_DIST_FROM_BASE_HIGH_PCT=3
+LONG_SQUEEZE_WINDOW_MINUTES=30
+LONG_SQUEEZE_MIN_PRICE_CHANGE_PCT=0.2
+LONG_SQUEEZE_MAX_PRICE_CHANGE_PCT=15
+LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO=3
+LONG_SQUEEZE_MIN_SIGNAL_SCORE=4
+LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT=-0.05
+LONG_SQUEEZE_MIN_OI_TREND_PCT=3
+SLEEPER_SCAN_ENABLED=true
+SLEEPER_MIN_TURNOVER_24H_USDT=250000
+SLEEPER_MAX_SYMBOLS=150
+SLEEPER_SCAN_INTERVAL_MINUTES=10
 ORDERBOOK_ENABLED=true
 ORDERBOOK_LIMIT=100
 ORDERBOOK_DEPTH_PCT=1
@@ -209,6 +224,28 @@ LONG_MOMENTUM_ENABLED=false
 
 Этот сигнал смотрит `LONG_BREAKOUT_WINDOW_MINUTES`: цена уже двинулась вверх, но еще не должна быть перегрета сильнее `LONG_BREAKOUT_MAX_PRICE_CHANGE_PCT`.
 
+Если монета долго стояла в мертвой сжатой базе и начала просыпаться на всплеске объема, бот отправит:
+
+```text
+🟢 LONG SQUEEZE
+```
+
+Это сетап пробуждения базы / шорт-сквиза (кейсы вроде LAB, LIT, ES, TLM):
+
+- база `LONG_SQUEEZE_LOOKBACK_DAYS` (по умолчанию 21 день) с диапазоном не шире `LONG_SQUEEZE_MAX_BASE_RANGE_PCT`;
+- цена пробивает high базы или стоит не глубже `LONG_SQUEEZE_MAX_DIST_FROM_BASE_HIGH_PCT` под ним;
+- объем за последний час минимум в `LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO` раза выше среднего часового объема базы;
+- цена за окно `LONG_SQUEEZE_WINDOW_MINUTES` растет хотя бы на `LONG_SQUEEZE_MIN_PRICE_CHANGE_PCT`.
+
+Важно: в отличие от accumulation/breakout, положительный futures CVD здесь НЕ обязателен. Отрицательный funding и отрицательный futures CVD при держащейся цене (абсорбция шортов) не режут сигнал, а добавляют баллы:
+
+- funding < 0 дает +1, funding ниже `LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT` дает +2;
+- рост OI за 24-48 часов при плоской цене (из SQLite-истории `market_snapshots`) от `LONG_SQUEEZE_MIN_OI_TREND_PCT` дает +1..2;
+- futures CVD в минусе при растущей цене дает +1 (шорты давят, цена не падает);
+- рост spot CVD дает +1.
+
+Чтобы сканер видел спящие монеты с маленьким оборотом (которые не проходят `MIN_TURNOVER_24H_USDT` и не попадают в top `MAX_SYMBOLS`), есть отдельный «спящий» проход: раз в `SLEEPER_SCAN_INTERVAL_MINUTES` минут бот дополнительно сканирует до `SLEEPER_MAX_SYMBOLS` монет с оборотом от `SLEEPER_MIN_TURNOVER_24H_USDT`. Это увеличивает нагрузку на API, поэтому проход включается не каждый скан.
+
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 `CANDIDATE_TRACKING_ENABLED=true` означает, что бот копит почти сигналы в базе для кнопки "Ближайшие". `WATCHLIST_ENABLED` оставлен под отдельные Telegram-alerts по watchlist и сейчас не влияет на реальные сигналы.
 `ALERT_COOLDOWN_MINUTES=240` и `ALERT_SCORE_IMPROVEMENT=1` означают, что повторный сигнал по той же монете не придет раньше 4 часов, а после 4 часов придет только если score стал выше минимум на 1.
@@ -216,7 +253,7 @@ LONG_MOMENTUM_ENABLED=false
 `TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240` защищает от спама: по одной монете бот отправляет в Telegram не больше одного сигнала за 4 часа, даже если второй сигнал пришел с другой биржи или другого сканера.
 
 `LONG_MAX_24H_PRICE_CHANGE_PCT=60` не дает long-сигнал, если монета уже сильно улетела за сутки. Это защита от поздних входов на хаях.
-`LONG_COMPRESSION_MAX_BASE_RANGE_PCT=35` добавляет баллы монетам, которые до импульса стояли в более сжатой базе.
+`LONG_COMPRESSION_MAX_BASE_RANGE_PCT=25` добавляет баллы монетам, которые до импульса стояли в более сжатой базе.
 `ORDERBOOK_ENABLED=true` добавляет проверку стакана. В сигнале появятся спред, глубина 1% и оценка ликвидности: `fragile`, `stressed` или `healthy`.
 
 Telegram-кнопки:

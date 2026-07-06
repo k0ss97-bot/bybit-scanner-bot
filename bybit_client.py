@@ -119,12 +119,15 @@ class BybitClient:
         return trades
 
     def get_daily_klines(self, symbol: str, limit: int = 5) -> list[Kline]:
+        return self.get_klines(symbol, interval="D", limit=limit)
+
+    def get_klines(self, symbol: str, interval: str = "D", limit: int = 5) -> list[Kline]:
         data = self._get(
             "/v5/market/kline",
             {
                 "category": "linear",
                 "symbol": symbol,
-                "interval": "D",
+                "interval": interval,
                 "limit": limit,
             },
         )

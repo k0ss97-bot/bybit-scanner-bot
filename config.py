@@ -112,6 +112,21 @@ class Settings:
     long_breakout_min_cvd_delta_usdt: float
     long_breakout_max_current_from_base_pct: float
     long_breakout_min_signal_score: int
+    long_squeeze_enabled: bool
+    long_squeeze_lookback_days: int
+    long_squeeze_max_base_range_pct: float
+    long_squeeze_max_dist_from_base_high_pct: float
+    long_squeeze_window_minutes: int
+    long_squeeze_min_price_change_pct: float
+    long_squeeze_max_price_change_pct: float
+    long_squeeze_min_volume_burst_ratio: float
+    long_squeeze_min_signal_score: int
+    long_squeeze_strong_negative_funding_pct: float
+    long_squeeze_min_oi_trend_pct: float
+    sleeper_scan_enabled: bool
+    sleeper_min_turnover_24h_usdt: float
+    sleeper_max_symbols: int
+    sleeper_scan_interval_minutes: int
     spot_cvd_update_interval_seconds: int
     candidate_tracking_enabled: bool
     history_snapshot_retention_days: int
@@ -243,6 +258,21 @@ def get_settings() -> Settings:
         long_breakout_min_cvd_delta_usdt=_float("LONG_BREAKOUT_MIN_CVD_DELTA_USDT", 3000),
         long_breakout_max_current_from_base_pct=_float("LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT", 60),
         long_breakout_min_signal_score=_int("LONG_BREAKOUT_MIN_SIGNAL_SCORE", 4),
+        long_squeeze_enabled=_bool("LONG_SQUEEZE_ENABLED", True),
+        long_squeeze_lookback_days=_int("LONG_SQUEEZE_LOOKBACK_DAYS", 21),
+        long_squeeze_max_base_range_pct=_float("LONG_SQUEEZE_MAX_BASE_RANGE_PCT", 25),
+        long_squeeze_max_dist_from_base_high_pct=_float("LONG_SQUEEZE_MAX_DIST_FROM_BASE_HIGH_PCT", 3),
+        long_squeeze_window_minutes=_int("LONG_SQUEEZE_WINDOW_MINUTES", 30),
+        long_squeeze_min_price_change_pct=_float("LONG_SQUEEZE_MIN_PRICE_CHANGE_PCT", 0.2),
+        long_squeeze_max_price_change_pct=_float("LONG_SQUEEZE_MAX_PRICE_CHANGE_PCT", 15),
+        long_squeeze_min_volume_burst_ratio=_float("LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO", 3),
+        long_squeeze_min_signal_score=_int("LONG_SQUEEZE_MIN_SIGNAL_SCORE", 4),
+        long_squeeze_strong_negative_funding_pct=_float("LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT", -0.05),
+        long_squeeze_min_oi_trend_pct=_float("LONG_SQUEEZE_MIN_OI_TREND_PCT", 3),
+        sleeper_scan_enabled=_bool("SLEEPER_SCAN_ENABLED", True),
+        sleeper_min_turnover_24h_usdt=_float("SLEEPER_MIN_TURNOVER_24H_USDT", 250000),
+        sleeper_max_symbols=_int("SLEEPER_MAX_SYMBOLS", 150),
+        sleeper_scan_interval_minutes=_int("SLEEPER_SCAN_INTERVAL_MINUTES", 10),
         spot_cvd_update_interval_seconds=_int("SPOT_CVD_UPDATE_INTERVAL_SECONDS", 300),
         candidate_tracking_enabled=_bool("CANDIDATE_TRACKING_ENABLED", True),
         history_snapshot_retention_days=_int("HISTORY_SNAPSHOT_RETENTION_DAYS", 7),
