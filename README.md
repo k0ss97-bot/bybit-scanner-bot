@@ -158,6 +158,8 @@ LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO=3
 LONG_SQUEEZE_MIN_SIGNAL_SCORE=4
 LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT=-0.05
 LONG_SQUEEZE_MIN_OI_TREND_PCT=3
+SPRING_MIN_SCORE=3
+SPRING_MAX_PER_SCAN=10
 SLEEPER_SCAN_ENABLED=true
 SLEEPER_MIN_TURNOVER_24H_USDT=250000
 SLEEPER_MAX_SYMBOLS=150
@@ -245,6 +247,8 @@ LONG_MOMENTUM_ENABLED=false
 - рост spot CVD дает +1.
 
 Чтобы сканер видел спящие монеты с маленьким оборотом (которые не проходят `MIN_TURNOVER_24H_USDT` и не попадают в top `MAX_SYMBOLS`), есть отдельный «спящий» проход: раз в `SLEEPER_SCAN_INTERVAL_MINUTES` минут бот дополнительно сканирует до `SLEEPER_MAX_SYMBOLS` монет с оборотом от `SLEEPER_MIN_TURNOVER_24H_USDT`. Это увеличивает нагрузку на API, поэтому проход включается не каждый скан.
+
+`SPRING` — это ранний список кандидатов на squeeze, а не Telegram-сигнал. Монета попадает туда, если база уже сжата, цена стоит рядом с high базы и общий spring-score не ниже `SPRING_MIN_SCORE`. В `/status`, `LONG статус` и кнопке "Ближайшие" бот покажет до `SPRING_MAX_PER_SCAN` таких монет, чтобы видеть подготовку до настоящего `LONG SQUEEZE`.
 
 `STARTUP_NOTIFICATIONS=false` означает, что бот не отправляет сообщение "scanner запущен" при обычном старте и пишет в Telegram только сигналы. Для проверки Telegram используй `--test-telegram`.
 `CANDIDATE_TRACKING_ENABLED=true` означает, что бот копит почти сигналы в базе для кнопки "Ближайшие". `WATCHLIST_ENABLED` оставлен под отдельные Telegram-alerts по watchlist и сейчас не влияет на реальные сигналы.

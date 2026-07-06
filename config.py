@@ -123,6 +123,8 @@ class Settings:
     long_squeeze_min_signal_score: int
     long_squeeze_strong_negative_funding_pct: float
     long_squeeze_min_oi_trend_pct: float
+    spring_min_score: int
+    spring_max_per_scan: int
     sleeper_scan_enabled: bool
     sleeper_min_turnover_24h_usdt: float
     sleeper_max_symbols: int
@@ -269,6 +271,8 @@ def get_settings() -> Settings:
         long_squeeze_min_signal_score=_int("LONG_SQUEEZE_MIN_SIGNAL_SCORE", 4),
         long_squeeze_strong_negative_funding_pct=_float("LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT", -0.05),
         long_squeeze_min_oi_trend_pct=_float("LONG_SQUEEZE_MIN_OI_TREND_PCT", 3),
+        spring_min_score=_int("SPRING_MIN_SCORE", 3),
+        spring_max_per_scan=_int("SPRING_MAX_PER_SCAN", 10),
         sleeper_scan_enabled=_bool("SLEEPER_SCAN_ENABLED", True),
         sleeper_min_turnover_24h_usdt=_float("SLEEPER_MIN_TURNOVER_24H_USDT", 250000),
         sleeper_max_symbols=_int("SLEEPER_MAX_SYMBOLS", 150),

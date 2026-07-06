@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import time
 from typing import TYPE_CHECKING
 
@@ -93,6 +93,23 @@ class BaseCacheEntry:
 
 
 @dataclass(frozen=True)
+class SpringCandidate:
+    """Монета в сжатом боковике, заряженная под сквиз, но еще без выстрела."""
+
+    symbol: str
+    price: float
+    turnover_24h: float
+    spring_score: int
+    base_range_pct: float
+    price_from_base_high_pct: float
+    funding_rate: float
+    oi_trend_change_pct: float | None
+    burst_ratio: float
+    oi_change_pct: float
+    price_change_pct: float
+
+
+@dataclass(frozen=True)
 class ScanResult:
     signals: list[LongSignal]
     watchlist_alerts: list[LongWatchlistAlert]
@@ -100,6 +117,7 @@ class ScanResult:
     failed_symbols: int
     skipped_symbols: int
     rejection_reasons: dict[str, int]
+    springs: list[SpringCandidate] = field(default_factory=list)
 
 
 class LongScanner:
@@ -133,6 +151,7 @@ class LongScanner:
         binance_tickers = self._get_binance_tickers()
         signals = []
         watchlist_candidates = []
+        spring_candidates = []
         failed_symbols = 0
         skipped_symbols = 0
         rejection_reasons: dict[str, int] = {}
@@ -146,7 +165,7 @@ class LongScanner:
                 new_spot_trades = self._update_spot_cvd(ticker.symbol, state)
                 self._add_snapshot(now, ticker, state, new_trades, new_spot_trades)
 
-                signal, watchlist_alert = self._build_signal(
+                signal, watchlist_alert, spring_candidate = self._build_signal(
                     now,
                     ticker,
                     state,
@@ -181,6 +200,8 @@ class LongScanner:
                     watchlist_candidates.append(watchlist_alert)
                 else:
                     skipped_symbols += 1
+                if spring_candidate is not None:
+                    spring_candidates.append(spring_candidate)
             except Exception as error:
                 failed_symbols += 1
                 print(f"{ticker.symbol}: scan failed: {error}")
@@ -193,6 +214,11 @@ class LongScanner:
             key=watchlist_alert_rank,
             reverse=True,
         )[:watchlist_limit]
+        spring_candidates = sorted(
+            spring_candidates,
+            key=spring_candidate_rank,
+            reverse=True,
+        )[: max(0, self.settings.spring_max_per_scan)]
         if self.history is not None and self.settings.candidate_tracking_enabled:
             for watchlist_alert in watchlist_alerts:
                 self.history.record_watchlist_candidate(
@@ -206,6 +232,23 @@ class LongScanner:
                     ts=now,
                     cooldown_seconds=watchlist_cooldown_seconds,
                 )
+            for spring in spring_candidates:
+                missing_checks = []
+                if spring.burst_ratio < self.settings.long_squeeze_min_volume_burst_ratio:
+                    missing_checks.append("volume_burst")
+                if spring.price_change_pct < self.settings.long_squeeze_min_price_change_pct:
+                    missing_checks.append("price_rise")
+                self.history.record_watchlist_candidate(
+                    scanner="long_spring",
+                    symbol=spring.symbol,
+                    score=spring.spring_score,
+                    price=spring.price,
+                    passed_checks=["base_compressed", "near_base_high"],
+                    missing_checks=missing_checks or ["squeeze_confirmation"],
+                    payload=str(spring),
+                    ts=now,
+                    cooldown_seconds=watchlist_cooldown_seconds,
+                )
 
         self.store.save()
         return ScanResult(
@@ -215,6 +258,7 @@ class LongScanner:
             failed_symbols=failed_symbols,
             skipped_symbols=skipped_symbols,
             rejection_reasons=rejection_reasons,
+            springs=spring_candidates,
         )
 
     def _select_tickers(self) -> list[Ticker]:
@@ -363,13 +407,13 @@ class LongScanner:
         state: SymbolState,
         rejection_reasons: dict[str, int],
         binance_ticker: BinanceTicker | None,
-    ) -> tuple[LongSignal | None, LongWatchlistAlert | None]:
+    ) -> tuple[LongSignal | None, LongWatchlistAlert | None, SpringCandidate | None]:
         current = state.snapshots[-1]
         previous = self._find_window_snapshot(current.ts, state)
         if previous is None:
             state.consecutive_matches = 0
             count_reason(rejection_reasons, "warmup_no_window")
-            return None, None
+            return None, None, None
 
         oi_change_pct = pct_change(previous.oi, current.oi)
         cvd_delta = current.cvd - previous.cvd
@@ -381,7 +425,7 @@ class LongScanner:
         if base_structure is None:
             state.consecutive_matches = 0
             count_reason(rejection_reasons, "no_base_structure")
-            return None, None
+            return None, None, None
 
         binance_volume_ok = (
             not self.settings.binance_confirmation_required
@@ -436,6 +480,7 @@ class LongScanner:
         signal_checks = checks
         signal_base = base_structure
         best_watchlist = None
+        spring_candidate = None
         if self.settings.long_momentum_enabled:
             best_watchlist = (
                 signal_score,
@@ -527,6 +572,10 @@ class LongScanner:
                 rejection_reasons=rejection_reasons,
             )
             if squeeze_candidate is not None:
+                spring_candidate = self._build_spring_candidate(
+                    ticker=ticker,
+                    squeeze_candidate=squeeze_candidate,
+                )
                 best_watchlist = best_candidate(
                     best_watchlist,
                     (
@@ -536,6 +585,7 @@ class LongScanner:
                     ),
                 )
                 if all(squeeze_candidate[1].values()):
+                    spring_candidate = None
                     (
                         signal_score,
                         signal_checks,
@@ -555,7 +605,7 @@ class LongScanner:
             state.consecutive_matches = 0
             if best_watchlist is None:
                 count_reason(rejection_reasons, "no_watchlist_candidate")
-                return None, None
+                return None, None, spring_candidate
             (
                 best_score,
                 best_checks,
@@ -584,12 +634,12 @@ class LongScanner:
                 turnover_ratio_to_base=base_structure.turnover_ratio_to_base,
                 window_minutes=best_window_minutes,
                 liquidity=best_liquidity,
-            )
+            ), spring_candidate
 
         repeat_rejection = self._repeat_alert_rejection(now, state, signal_score)
         if repeat_rejection is not None:
             count_reason(rejection_reasons, repeat_rejection)
-            return None, None
+            return None, None, spring_candidate
 
         state.consecutive_matches += 1
         if state.consecutive_matches < self.settings.consecutive_checks:
@@ -608,7 +658,7 @@ class LongScanner:
                 turnover_ratio_to_base=signal_base.turnover_ratio_to_base,
                 window_minutes=signal_window_minutes,
                 liquidity=liquidity,
-            )
+            ), spring_candidate
 
         return LongSignal(
             symbol=ticker.symbol,
@@ -641,7 +691,7 @@ class LongScanner:
             depth_1pct_usdt=liquidity.depth_1pct_usdt,
             depth_coverage_1h=liquidity.depth_coverage_1h,
             setup_type=setup_type,
-        ), None
+        ), None, None
 
     def _build_breakout_candidate(
         self,
@@ -920,6 +970,49 @@ class LongScanner:
             self.settings.long_squeeze_window_minutes,
             liquidity,
             base_structure,
+            burst_ratio,
+            oi_trend,
+        )
+
+    def _build_spring_candidate(
+        self,
+        *,
+        ticker: Ticker,
+        squeeze_candidate: tuple,
+    ) -> SpringCandidate | None:
+        if self.settings.spring_max_per_scan <= 0:
+            return None
+
+        signal_score = int(squeeze_candidate[0])
+        checks = squeeze_candidate[1]
+        if signal_score < self.settings.spring_min_score:
+            return None
+        if not checks.get("squeeze_base_compressed", False):
+            return None
+        if not checks.get("squeeze_near_base_high", False):
+            return None
+        if not checks.get("binance_volume", True):
+            return None
+
+        oi_change_pct = float(squeeze_candidate[2])
+        price_change_pct = float(squeeze_candidate[6])
+        base_structure = squeeze_candidate[10]
+        burst_ratio = float(squeeze_candidate[11])
+        oi_trend = squeeze_candidate[12]
+        oi_trend_change_pct = None if oi_trend is None else float(oi_trend[0])
+
+        return SpringCandidate(
+            symbol=ticker.symbol,
+            price=ticker.price,
+            turnover_24h=ticker.turnover_24h,
+            spring_score=signal_score,
+            base_range_pct=base_structure.base_range_pct,
+            price_from_base_high_pct=pct_change(base_structure.base_high_price, ticker.price),
+            funding_rate=ticker.funding_rate,
+            oi_trend_change_pct=oi_trend_change_pct,
+            burst_ratio=burst_ratio,
+            oi_change_pct=oi_change_pct,
+            price_change_pct=price_change_pct,
         )
 
     def _score_squeeze(
@@ -1322,6 +1415,15 @@ def best_candidate(current: tuple | None, candidate: tuple) -> tuple:
 
 def watchlist_alert_rank(alert: LongWatchlistAlert) -> tuple[int, int]:
     return alert.signal_score, len(alert.passed_checks)
+
+
+def spring_candidate_rank(candidate: SpringCandidate) -> tuple[int, float, float, float]:
+    return (
+        candidate.spring_score,
+        candidate.burst_ratio,
+        -abs(candidate.price_from_base_high_pct),
+        candidate.turnover_24h,
+    )
 
 
 def count_reason(rejection_reasons: dict[str, int], reason: str) -> None:

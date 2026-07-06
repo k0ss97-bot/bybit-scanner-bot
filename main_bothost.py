@@ -135,6 +135,7 @@ def format_rejections(rejection_reasons: dict[str, int], limit: int = 5) -> str:
 
 
 def update_status(scanner: str, result, reviewed: int) -> None:
+    springs = list(getattr(result, "springs", []))
     with STATUS_LOCK:
         SCANNER_STATUS[scanner] = {
             "stage": "done",
@@ -142,11 +143,13 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "symbols": result.scanned_symbols,
             "signals": len(result.signals),
             "watchlist": len(result.watchlist_alerts),
+            "springs": len(springs),
             "failed": result.failed_symbols,
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
             "rejection_reasons": dict(result.rejection_reasons),
-            "closest": format_closest_alerts(result.watchlist_alerts),
+            "closest": format_closest_alerts(result.watchlist_alerts)
+            + format_spring_candidates(springs),
         }
 
 
@@ -202,6 +205,24 @@ def format_closest_alerts(alerts, limit: int = 5) -> list[str]:
     return lines
 
 
+def format_spring_candidates(springs, limit: int = 5) -> list[str]:
+    if not springs:
+        return []
+
+    lines = []
+    for spring in springs[:limit]:
+        oi_trend = getattr(spring, "oi_trend_change_pct", None)
+        oi_trend_text = "n/a" if oi_trend is None else f"{oi_trend:+.1f}%"
+        lines.append(
+            f"SPRING {spring.symbol} score={spring.spring_score}/10 "
+            f"price={spring.price:g}, база={spring.base_range_pct:.1f}%, "
+            f"от high={spring.price_from_base_high_pct:+.1f}%, "
+            f"burst=x{spring.burst_ratio:.1f}, funding={spring.funding_rate * 100:+.3f}%, "
+            f"OI trend={oi_trend_text}"
+        )
+    return lines
+
+
 def format_status_message() -> str:
     with STATUS_LOCK:
         snapshot = dict(SCANNER_STATUS)
@@ -233,7 +254,8 @@ def format_status_message() -> str:
             "\n"
             f"{scanner}: обновлено {ago}s назад\n"
             f"Монет: {data['symbols']}, сигналов: {data['signals']}, "
-            f"почти сигналов: {data['watchlist']}, ошибок: {data['failed']}\n"
+            f"почти сигналов: {data['watchlist']}, spring: {data.get('springs', 0)}, "
+            f"ошибок: {data['failed']}\n"
             f"Причины отсечения: {data['rejections']}"
         )
     return "\n".join(lines)
@@ -264,7 +286,8 @@ def format_single_status_message(scanner: str) -> str:
     return (
         f"{scanner}: обновлено {ago}s назад\n"
         f"Монет: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
-        f"почти сигналов: {data.get('watchlist', 0)}, ошибок: {data.get('failed', 0)}\n"
+        f"почти сигналов: {data.get('watchlist', 0)}, "
+        f"spring: {data.get('springs', 0)}, ошибок: {data.get('failed', 0)}\n"
         f"Причины отсечения: {data.get('rejections', 'нет данных')}"
     )
 
@@ -333,6 +356,8 @@ def format_settings_message(settings) -> str:
         f"LONG_SQUEEZE_MIN_SIGNAL_SCORE={settings.long_squeeze_min_signal_score}\n"
         f"LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT={settings.long_squeeze_strong_negative_funding_pct:g}\n"
         f"LONG_SQUEEZE_MIN_OI_TREND_PCT={settings.long_squeeze_min_oi_trend_pct:g}\n"
+        f"SPRING_MIN_SCORE={settings.spring_min_score}\n"
+        f"SPRING_MAX_PER_SCAN={settings.spring_max_per_scan}\n"
         f"SLEEPER_SCAN_ENABLED={str(settings.sleeper_scan_enabled).lower()}\n"
         f"SLEEPER_MIN_TURNOVER_24H_USDT={settings.sleeper_min_turnover_24h_usdt:g}\n"
         f"SLEEPER_MAX_SYMBOLS={settings.sleeper_max_symbols}\n"
