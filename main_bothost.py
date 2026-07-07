@@ -12,20 +12,15 @@ from binance_client import BinanceClient
 from config import get_settings
 from dump_scanner import DumpScanner
 from history import HistoryStore
-from long_scanner import LongScanner
-from pump_exhaustion_scanner import PumpExhaustionScanner, ShortBreakdownSignal
 from state import StateStore
 from telegram import (
     TelegramNotifier,
     format_dump_signal,
-    format_pump_signal,
-    format_signal,
-    format_short_breakdown_signal,
 )
 
 STATUS_LOCK = threading.Lock()
 SCANNER_STATUS: dict[str, dict[str, object]] = {}
-SCANNERS = ("LONG", "PUMP", "DUMP BYBIT", "DUMP BINANCE")
+SCANNERS = ("DUMP BYBIT", "DUMP BINANCE")
 SCANNER_PAUSED = {scanner: False for scanner in SCANNERS}
 WARNING_LOCK = threading.Lock()
 LAST_WARNING_TS: dict[str, int] = {}
@@ -38,7 +33,6 @@ def menu_keyboard() -> dict:
             [{"text": "📊 Статус"}, {"text": "⚙️ Настройки"}],
             [{"text": "📈 Статистика"}, {"text": "❓ Почему нет сигналов"}],
             [{"text": "🎯 Ближайшие"}, {"text": "🕘 Последние сигналы"}],
-            [{"text": "🟢 LONG статус"}, {"text": "🔴 PUMP статус"}],
             [{"text": "🔻 DUMP BYBIT"}, {"text": "🔻 DUMP BINANCE"}],
             [{"text": "⏸ Пауза"}, {"text": "▶️ Старт"}],
         ],
@@ -54,13 +48,6 @@ def safe_send_message(
 ) -> None:
     try:
         notifier.send_message(text, reply_markup=reply_markup)
-    except Exception as error:
-        print(f"Telegram send failed: {error}", flush=True)
-
-
-def safe_send_long_signal(notifier: TelegramNotifier, signal) -> None:
-    try:
-        notifier.send_signal(signal)
     except Exception as error:
         print(f"Telegram send failed: {error}", flush=True)
 
@@ -135,7 +122,6 @@ def format_rejections(rejection_reasons: dict[str, int], limit: int = 5) -> str:
 
 
 def update_status(scanner: str, result, reviewed: int) -> None:
-    springs = list(getattr(result, "springs", []))
     with STATUS_LOCK:
         SCANNER_STATUS[scanner] = {
             "stage": "done",
@@ -143,13 +129,11 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "symbols": result.scanned_symbols,
             "signals": len(result.signals),
             "watchlist": len(result.watchlist_alerts),
-            "springs": len(springs),
             "failed": result.failed_symbols,
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
             "rejection_reasons": dict(result.rejection_reasons),
-            "closest": format_closest_alerts(result.watchlist_alerts)
-            + format_spring_candidates(springs),
+            "closest": format_closest_alerts(result.watchlist_alerts),
         }
 
 
@@ -205,24 +189,6 @@ def format_closest_alerts(alerts, limit: int = 5) -> list[str]:
     return lines
 
 
-def format_spring_candidates(springs, limit: int = 5) -> list[str]:
-    if not springs:
-        return []
-
-    lines = []
-    for spring in springs[:limit]:
-        oi_trend = getattr(spring, "oi_trend_change_pct", None)
-        oi_trend_text = "n/a" if oi_trend is None else f"{oi_trend:+.1f}%"
-        lines.append(
-            f"SPRING {spring.symbol} score={spring.spring_score}/10 "
-            f"price={spring.price:g}, база={spring.base_range_pct:.1f}%, "
-            f"от high={spring.price_from_base_high_pct:+.1f}%, "
-            f"burst=x{spring.burst_ratio:.1f}, funding={spring.funding_rate * 100:+.3f}%, "
-            f"OI trend={oi_trend_text}"
-        )
-    return lines
-
-
 def format_status_message() -> str:
     with STATUS_LOCK:
         snapshot = dict(SCANNER_STATUS)
@@ -254,8 +220,7 @@ def format_status_message() -> str:
             "\n"
             f"{scanner}: обновлено {ago}s назад\n"
             f"Монет: {data['symbols']}, сигналов: {data['signals']}, "
-            f"почти сигналов: {data['watchlist']}, spring: {data.get('springs', 0)}, "
-            f"ошибок: {data['failed']}\n"
+            f"почти сигналов: {data['watchlist']}, ошибок: {data['failed']}\n"
             f"Причины отсечения: {data['rejections']}"
         )
     return "\n".join(lines)
@@ -286,8 +251,7 @@ def format_single_status_message(scanner: str) -> str:
     return (
         f"{scanner}: обновлено {ago}s назад\n"
         f"Монет: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
-        f"почти сигналов: {data.get('watchlist', 0)}, "
-        f"spring: {data.get('springs', 0)}, ошибок: {data.get('failed', 0)}\n"
+        f"почти сигналов: {data.get('watchlist', 0)}, ошибок: {data.get('failed', 0)}\n"
         f"Причины отсечения: {data.get('rejections', 'нет данных')}"
     )
 
@@ -296,90 +260,15 @@ def format_settings_message(settings) -> str:
     return (
         "Текущие настройки:\n\n"
         "Общее:\n"
-        f"MAX_SYMBOLS={settings.max_symbols}\n"
-        f"PUMP_MAX_SYMBOLS={settings.pump_max_symbols}\n"
-        f"SCAN_INTERVAL_SECONDS={settings.scan_interval_seconds}\n"
-        f"PUMP_SCAN_INTERVAL_SECONDS={settings.pump_scan_interval_seconds}\n"
         f"BYBIT_MIN_REQUEST_INTERVAL_SECONDS={settings.bybit_min_request_interval_seconds:g}\n"
-        f"SPOT_CVD_UPDATE_INTERVAL_SECONDS={settings.spot_cvd_update_interval_seconds}\n"
         f"HISTORY_SNAPSHOT_RETENTION_DAYS={settings.history_snapshot_retention_days}\n"
         f"WATCHLIST_RETENTION_DAYS={settings.watchlist_retention_days}\n"
         f"TELEGRAM_SYMBOL_COOLDOWN_MINUTES={settings.telegram_symbol_cooldown_minutes}\n\n"
-        "Ликвидность:\n"
-        f"ORDERBOOK_ENABLED={str(settings.orderbook_enabled).lower()}\n"
-        f"ORDERBOOK_LIMIT={settings.orderbook_limit}\n"
-        f"ORDERBOOK_DEPTH_PCT={settings.orderbook_depth_pct:g}\n"
-        f"ORDERBOOK_CACHE_SECONDS={settings.orderbook_cache_seconds}\n\n"
-        "LONG:\n"
-        f"OI_THRESHOLD_PCT={settings.oi_threshold_pct:g}\n"
-        f"CVD_THRESHOLD_PCT={settings.cvd_threshold_pct:g}\n"
-        f"MIN_CVD_DELTA_USDT={settings.min_cvd_delta_usdt:g}\n"
-        f"MIN_TURNOVER_24H_USDT={settings.min_turnover_24h_usdt:g}\n"
-        f"LONG_MOMENTUM_ENABLED={str(settings.long_momentum_enabled).lower()}\n"
-        f"LONG_LOOKBACK_DAYS={settings.long_lookback_days}\n"
-        f"LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT={settings.long_max_price_growth_lookback_pct:g}\n"
-        f"LONG_MAX_24H_PRICE_CHANGE_PCT={settings.long_max_24h_price_change_pct:g}\n"
-        f"LONG_COMPRESSION_MAX_BASE_RANGE_PCT={settings.long_compression_max_base_range_pct:g}\n"
-        f"LONG_MIN_TURNOVER_RATIO_TO_BASE={settings.long_min_turnover_ratio_to_base:g}\n"
-        f"LONG_MIN_SIGNAL_SCORE={settings.long_min_signal_score}\n"
-        f"LONG_WATCHLIST_MIN_SCORE={settings.long_watchlist_min_score}\n"
-        f"ALERT_COOLDOWN_MINUTES={settings.alert_cooldown_minutes}\n"
-        f"ALERT_SCORE_IMPROVEMENT={settings.alert_score_improvement}\n\n"
-        "LONG ACCUMULATION:\n"
-        f"LONG_ACCUMULATION_ENABLED={str(settings.long_accumulation_enabled).lower()}\n"
-        f"LONG_ACCUMULATION_WINDOW_MINUTES={settings.long_accumulation_window_minutes}\n"
-        f"LONG_ACCUMULATION_WINDOWS_MINUTES={','.join(str(item) for item in settings.long_accumulation_windows_minutes)}\n"
-        f"LONG_ACCUMULATION_MIN_PRICE_CHANGE_PCT={settings.long_accumulation_min_price_change_pct:g}\n"
-        f"LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT={settings.long_accumulation_max_price_change_pct:g}\n"
-        f"LONG_ACCUMULATION_MIN_OI_CHANGE_PCT={settings.long_accumulation_min_oi_change_pct:g}\n"
-        f"LONG_ACCUMULATION_MIN_CVD_DELTA_USDT={settings.long_accumulation_min_cvd_delta_usdt:g}\n"
-        f"LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT={settings.long_accumulation_max_current_from_base_pct:g}\n"
-        f"LONG_ACCUMULATION_MIN_SIGNAL_SCORE={settings.long_accumulation_min_signal_score}\n\n"
-        "LONG BREAKOUT:\n"
-        f"LONG_BREAKOUT_ENABLED={str(settings.long_breakout_enabled).lower()}\n"
-        f"LONG_BREAKOUT_WINDOW_MINUTES={settings.long_breakout_window_minutes}\n"
-        f"LONG_BREAKOUT_MIN_PRICE_CHANGE_PCT={settings.long_breakout_min_price_change_pct:g}\n"
-        f"LONG_BREAKOUT_MAX_PRICE_CHANGE_PCT={settings.long_breakout_max_price_change_pct:g}\n"
-        f"LONG_BREAKOUT_MIN_OI_CHANGE_PCT={settings.long_breakout_min_oi_change_pct:g}\n"
-        f"LONG_BREAKOUT_MIN_CVD_DELTA_USDT={settings.long_breakout_min_cvd_delta_usdt:g}\n"
-        f"LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT={settings.long_breakout_max_current_from_base_pct:g}\n"
-        f"LONG_BREAKOUT_MIN_SIGNAL_SCORE={settings.long_breakout_min_signal_score}\n\n"
-        "LONG SQUEEZE:\n"
-        f"LONG_SQUEEZE_ENABLED={str(settings.long_squeeze_enabled).lower()}\n"
-        f"LONG_SQUEEZE_LOOKBACK_DAYS={settings.long_squeeze_lookback_days}\n"
-        f"LONG_SQUEEZE_MAX_BASE_RANGE_PCT={settings.long_squeeze_max_base_range_pct:g}\n"
-        f"LONG_SQUEEZE_MAX_DIST_FROM_BASE_HIGH_PCT={settings.long_squeeze_max_dist_from_base_high_pct:g}\n"
-        f"LONG_SQUEEZE_WINDOW_MINUTES={settings.long_squeeze_window_minutes}\n"
-        f"LONG_SQUEEZE_MIN_PRICE_CHANGE_PCT={settings.long_squeeze_min_price_change_pct:g}\n"
-        f"LONG_SQUEEZE_MAX_PRICE_CHANGE_PCT={settings.long_squeeze_max_price_change_pct:g}\n"
-        f"LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO={settings.long_squeeze_min_volume_burst_ratio:g}\n"
-        f"LONG_SQUEEZE_MIN_SIGNAL_SCORE={settings.long_squeeze_min_signal_score}\n"
-        f"LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT={settings.long_squeeze_strong_negative_funding_pct:g}\n"
-        f"LONG_SQUEEZE_MIN_OI_TREND_PCT={settings.long_squeeze_min_oi_trend_pct:g}\n"
-        f"SPRING_MIN_SCORE={settings.spring_min_score}\n"
-        f"SPRING_MAX_PER_SCAN={settings.spring_max_per_scan}\n"
-        f"SLEEPER_SCAN_ENABLED={str(settings.sleeper_scan_enabled).lower()}\n"
-        f"SLEEPER_MIN_TURNOVER_24H_USDT={settings.sleeper_min_turnover_24h_usdt:g}\n"
-        f"SLEEPER_MAX_SYMBOLS={settings.sleeper_max_symbols}\n"
-        f"SLEEPER_SCAN_INTERVAL_MINUTES={settings.sleeper_scan_interval_minutes}\n\n"
-        "PUMP:\n"
-        f"PUMP_MIN_TURNOVER_24H_USDT={settings.pump_min_turnover_24h_usdt:g}\n"
-        f"PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.pump_min_price_growth_lookback_pct:g}\n"
-        f"PUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.pump_min_drawdown_from_high_pct:g}\n"
-        f"PUMP_MIN_SIGNAL_SCORE={settings.pump_min_signal_score}\n"
-        f"PUMP_ALERT_COOLDOWN_MINUTES={settings.pump_alert_cooldown_minutes}\n"
-        f"PUMP_ALERT_SCORE_IMPROVEMENT={settings.pump_alert_score_improvement}\n"
-        f"SHORT_BREAKDOWN_ENABLED={str(settings.short_breakdown_enabled).lower()}\n"
-        f"SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT={settings.short_breakdown_min_oi_growth_pct:g}\n"
-        f"SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_breakdown_max_price_change_window_pct:g}\n"
-        f"SHORT_BREAKDOWN_MIN_SIGNAL_SCORE={settings.short_breakdown_min_signal_score}\n"
-        f"SHORT_LONG_TRAP_ENABLED={str(settings.short_long_trap_enabled).lower()}\n"
-        f"SHORT_LONG_TRAP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.short_long_trap_min_drawdown_from_high_pct:g}\n"
-        f"SHORT_LONG_TRAP_MIN_OI_GROWTH_PCT={settings.short_long_trap_min_oi_growth_pct:g}\n"
-        f"SHORT_LONG_TRAP_MAX_PRICE_CHANGE_WINDOW_PCT={settings.short_long_trap_max_price_change_window_pct:g}\n"
-        f"SHORT_LONG_TRAP_MIN_SIGNAL_SCORE={settings.short_long_trap_min_signal_score}\n\n"
         "DUMP:\n"
         f"DUMP_ENABLED={str(settings.dump_enabled).lower()}\n"
+        f"DUMP_SCAN_INTERVAL_SECONDS={settings.dump_scan_interval_seconds}\n"
+        f"DUMP_WINDOW_MINUTES={settings.dump_window_minutes}\n"
+        f"DUMP_LOOKBACK_DAYS={settings.dump_lookback_days}\n"
         f"DUMP_MIN_TURNOVER_24H_USDT={settings.dump_min_turnover_24h_usdt:g}\n"
         f"DUMP_MAX_SYMBOLS={settings.dump_max_symbols}\n"
         f"DUMP_STRUCTURE_CACHE_MINUTES={settings.dump_structure_cache_minutes}\n"
@@ -388,13 +277,14 @@ def format_settings_message(settings) -> str:
         f"DUMP_MIN_PRICE_DROP_WINDOW_PCT={settings.dump_min_price_drop_window_pct:g}\n"
         f"DUMP_MIN_NEGATIVE_CVD_DELTA_USDT={settings.dump_min_negative_cvd_delta_usdt:g}\n"
         f"DUMP_MAX_OI_DROP_WINDOW_PCT={settings.dump_max_oi_drop_window_pct:g}\n"
+        f"DUMP_MAX_FUNDING_RATE={settings.dump_max_funding_rate:g}\n"
         f"DUMP_SYMBOL_COOLDOWN_MINUTES={settings.dump_symbol_cooldown_minutes}\n"
-        f"DUMP_MIN_SIGNAL_SCORE={settings.dump_min_signal_score}\n\n"
+        f"DUMP_ALERT_COOLDOWN_MINUTES={settings.dump_alert_cooldown_minutes}\n"
+        f"DUMP_ALERT_SCORE_IMPROVEMENT={settings.dump_alert_score_improvement}\n"
+        f"DUMP_MIN_SIGNAL_SCORE={settings.dump_min_signal_score}\n"
+        f"DUMP_WATCHLIST_MIN_SCORE={settings.dump_watchlist_min_score}\n\n"
         "Фильтры:\n"
-        f"BINANCE_CONFIRM_ENABLED={str(settings.binance_confirm_enabled).lower()}\n"
-        f"BINANCE_CONFIRMATION_REQUIRED={str(settings.binance_confirmation_required).lower()}\n"
         f"CANDIDATE_TRACKING_ENABLED={str(settings.candidate_tracking_enabled).lower()}\n"
-        f"WATCHLIST_ENABLED={str(settings.watchlist_enabled).lower()}\n"
         f"WATCHLIST_MAX_ALERTS_PER_SCAN={settings.watchlist_max_alerts_per_scan}\n"
         f"WATCHLIST_COOLDOWN_MINUTES={settings.watchlist_cooldown_minutes}\n"
         f"STATUS_COMMANDS_ENABLED={str(settings.status_commands_enabled).lower()}"
@@ -542,10 +432,6 @@ def is_status_request(text: str) -> bool:
 
 
 def status_target(text: str) -> str | None:
-    if text.startswith("/status long") or text in {"long статус", "🟢 long статус"}:
-        return "LONG"
-    if text.startswith("/status pump") or text in {"pump статус", "🔴 pump статус"}:
-        return "PUMP"
     if text.startswith("/status dump bybit") or text in {"dump bybit", "🔻 dump bybit"}:
         return "DUMP BYBIT"
     if text.startswith("/status dump binance") or text in {"dump binance", "🔻 dump binance"}:
@@ -576,10 +462,6 @@ def is_rejections_request(text: str) -> bool:
 
 
 def rejection_target(text: str) -> str | None:
-    if text.startswith("/why long") or text in {"почему long", "почему лонг", "why long"}:
-        return "LONG"
-    if text.startswith("/why pump") or text in {"почему pump", "почему памп", "why pump"}:
-        return "PUMP"
     if text.startswith("/why dump bybit"):
         return "DUMP BYBIT"
     if text.startswith("/why dump"):
@@ -714,152 +596,6 @@ def run_status_loop() -> None:
         wait_or_stop(settings.status_poll_interval_seconds)
 
 
-def run_long_loop() -> None:
-    settings = get_settings()
-    client = build_bybit_client(settings)
-    binance_client = build_binance_client(settings)
-    history = HistoryStore(data_path("scanner.db"))
-    scanner = LongScanner(
-        client,
-        StateStore(data_path("state.json")),
-        settings,
-        history,
-        binance_client,
-    )
-    scanner.store.load()
-    notifier = build_notifier(settings)
-
-    while not STOP_EVENT.is_set():
-        if is_paused("LONG"):
-            update_paused_status("LONG")
-            wait_or_stop(settings.scan_interval_seconds)
-            continue
-        try:
-            update_scanning_status("LONG")
-            result = scanner.scan_once(
-                progress_callback=lambda current, total: update_scanning_status(
-                    "LONG",
-                    current,
-                    total,
-                )
-            )
-            for signal in result.signals:
-                signal_type = {
-                    "accumulation": "long_accumulation",
-                    "breakout": "long_breakout",
-                    "squeeze": "long_squeeze",
-                }.get(getattr(signal, "setup_type", "momentum"), "long")
-                send_signal_with_symbol_cooldown(
-                    notifier=notifier,
-                    history=history,
-                    settings=settings,
-                    signal=signal,
-                    signal_type=signal_type,
-                    formatter=format_signal,
-                )
-            reviewed = history.update_signal_reviews()
-            history.cleanup_old_data(
-                snapshot_retention_days=settings.history_snapshot_retention_days,
-                watchlist_retention_days=settings.watchlist_retention_days,
-            )
-            update_status("LONG", result, reviewed)
-            maybe_send_rate_warning("LONG", result.failed_symbols, notifier)
-            print(
-                "Long scan done: "
-                f"symbols={result.scanned_symbols}, "
-                f"signals={len(result.signals)}, "
-                f"failed={result.failed_symbols}, "
-                f"reviews={reviewed}, "
-                f"rejections={format_rejections(result.rejection_reasons)}",
-                flush=True,
-            )
-        except Exception:
-            if settings.debug_errors:
-                traceback.print_exc()
-            else:
-                print("Long scan error. Set DEBUG_ERRORS=true for details.", flush=True)
-
-        wait_or_stop(settings.scan_interval_seconds)
-
-
-def run_pump_loop() -> None:
-    settings = get_settings()
-    client = build_bybit_client(settings)
-    binance_client = build_binance_client(settings)
-    history = HistoryStore(data_path("scanner.db"))
-    scanner = PumpExhaustionScanner(
-        client,
-        StateStore(data_path("pump_state.json")),
-        settings,
-        history,
-        binance_client,
-    )
-    scanner.store.load()
-    notifier = build_notifier(settings)
-
-    while not STOP_EVENT.is_set():
-        if is_paused("PUMP"):
-            update_paused_status("PUMP")
-            wait_or_stop(settings.pump_scan_interval_seconds)
-            continue
-        try:
-            update_scanning_status("PUMP")
-            result = scanner.scan_once(
-                progress_callback=lambda current, total: update_scanning_status(
-                    "PUMP",
-                    current,
-                    total,
-                )
-            )
-            for signal in result.signals:
-                if isinstance(signal, ShortBreakdownSignal):
-                    signal_type = (
-                        "short_long_trap"
-                        if getattr(signal, "setup_type", "breakdown") == "long_trap"
-                        else "short_breakdown"
-                    )
-                    send_signal_with_symbol_cooldown(
-                        notifier=notifier,
-                        history=history,
-                        settings=settings,
-                        signal=signal,
-                        signal_type=signal_type,
-                        formatter=format_short_breakdown_signal,
-                    )
-                else:
-                    send_signal_with_symbol_cooldown(
-                        notifier=notifier,
-                        history=history,
-                        settings=settings,
-                        signal=signal,
-                        signal_type="pump_exhaustion",
-                        formatter=format_pump_signal,
-                    )
-            reviewed = history.update_signal_reviews()
-            history.cleanup_old_data(
-                snapshot_retention_days=settings.history_snapshot_retention_days,
-                watchlist_retention_days=settings.watchlist_retention_days,
-            )
-            update_status("PUMP", result, reviewed)
-            maybe_send_rate_warning("PUMP", result.failed_symbols, notifier)
-            print(
-                "Pump scan done: "
-                f"symbols={result.scanned_symbols}, "
-                f"signals={len(result.signals)}, "
-                f"failed={result.failed_symbols}, "
-                f"reviews={reviewed}, "
-                f"rejections={format_rejections(result.rejection_reasons)}",
-                flush=True,
-            )
-        except Exception:
-            if settings.debug_errors:
-                traceback.print_exc()
-            else:
-                print("Pump scan error. Set DEBUG_ERRORS=true for details.", flush=True)
-
-        wait_or_stop(settings.pump_scan_interval_seconds)
-
-
 def run_dump_loop(source: str) -> None:
     settings = get_settings()
     scanner_name = f"DUMP {source.upper()}"
@@ -937,8 +673,6 @@ def main() -> None:
         f"chat_id_present={bool(settings.telegram_chat_id)}",
         flush=True,
     )
-    long_thread = threading.Thread(target=run_long_loop, name="long-scanner", daemon=True)
-    pump_thread = threading.Thread(target=run_pump_loop, name="pump-scanner", daemon=True)
     dump_bybit_thread = threading.Thread(
         target=run_dump_loop,
         args=("BYBIT",),
@@ -953,8 +687,6 @@ def main() -> None:
     )
     status_thread = threading.Thread(target=run_status_loop, name="status-commands", daemon=True)
     worker_threads = [
-        long_thread,
-        pump_thread,
         dump_bybit_thread,
         dump_binance_thread,
     ]
@@ -978,17 +710,6 @@ def build_bybit_client(settings) -> BybitClient:
         settings.bybit_base_url,
         verify_ssl=settings.verify_ssl,
         min_request_interval_seconds=settings.bybit_min_request_interval_seconds,
-        rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
-        max_retries=settings.bybit_max_retries,
-    )
-
-
-def build_binance_client(settings) -> BinanceClient | None:
-    if not settings.binance_confirm_enabled:
-        return None
-    return BinanceClient(
-        settings.binance_base_url,
-        verify_ssl=settings.verify_ssl,
         rate_limit_backoff_seconds=settings.bybit_rate_limit_backoff_seconds,
         max_retries=settings.bybit_max_retries,
     )

@@ -1,19 +1,29 @@
 # Запуск на Bothost
 
+Боевая версия сейчас оставляет только один рабочий тип сигнала:
+
+```text
+🔻 DUMP TREND
+```
+
+`main_bothost.py` запускает два dump-сканера:
+
+- `DUMP BYBIT`
+- `DUMP BINANCE`
+
+LONG, PUMP, SHORT и SPRING в рабочем запуске отключены.
+
 ## Start command
 
 ```bash
-python main.py
+python main_bothost.py
 ```
 
-`main.py` запускает оба сканера в одном процессе через `main_bothost.py`:
-
-- LONG scanner;
-- PUMP exhaustion scanner.
+Если Bothost использует Dockerfile, команда уже задана внутри Dockerfile.
 
 ## Переменные окружения
 
-В панели Bothost добавь:
+В панели Bothost оставь только эти переменные:
 
 ```text
 SCANNER_BOT_TOKEN=токен_бота
@@ -21,111 +31,22 @@ TELEGRAM_CHAT_ID=твой_chat_id
 TELEGRAM_ENABLED=true
 STARTUP_NOTIFICATIONS=false
 TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240
+
 VERIFY_SSL=true
 DEBUG_ERRORS=false
-BYBIT_MIN_REQUEST_INTERVAL_SECONDS=0.35
-BYBIT_RATE_LIMIT_BACKOFF_SECONDS=3
-BYBIT_MAX_RETRIES=2
-SPOT_CVD_UPDATE_INTERVAL_SECONDS=300
-
-SCAN_INTERVAL_SECONDS=60
-WINDOW_MINUTES=15
-OI_THRESHOLD_PCT=1
-CVD_THRESHOLD_PCT=2
-MIN_CVD_DELTA_USDT=3000
-MIN_TURNOVER_24H_USDT=1000000
-MAX_SYMBOLS=250
-ALERT_COOLDOWN_MINUTES=240
-PRICE_MIN_CHANGE_PCT=0.3
-REQUIRE_PRICE_HOLD=true
-MIN_NEW_TRADES=50
-CONSECUTIVE_CHECKS=1
-LONG_MOMENTUM_ENABLED=false
-LONG_LOOKBACK_DAYS=14
-LONG_MAX_PRICE_GROWTH_LOOKBACK_PCT=200
-LONG_MAX_PRICE_CHANGE_WINDOW_PCT=25
-LONG_MIN_TURNOVER_RATIO_TO_BASE=0.8
-LONG_BASE_CACHE_MINUTES=15
-LONG_MIN_SIGNAL_SCORE=4
-LONG_WATCHLIST_MIN_SCORE=2
-LONG_MAX_24H_PRICE_CHANGE_PCT=60
-LONG_COMPRESSION_MAX_BASE_RANGE_PCT=25
-LONG_MIN_SPOT_CVD_CHANGE_PCT=-5
-LONG_MIN_SPOT_TRADES_FOR_FILTER=20
-LONG_ACCUMULATION_ENABLED=true
-LONG_ACCUMULATION_WINDOW_MINUTES=120
-LONG_ACCUMULATION_WINDOWS_MINUTES=30,120,240
-LONG_ACCUMULATION_MIN_PRICE_CHANGE_PCT=-2.5
-LONG_ACCUMULATION_MAX_PRICE_CHANGE_PCT=6
-LONG_ACCUMULATION_MIN_OI_CHANGE_PCT=1
-LONG_ACCUMULATION_MIN_CVD_DELTA_USDT=5000
-LONG_ACCUMULATION_MAX_CURRENT_FROM_BASE_PCT=35
-LONG_ACCUMULATION_MIN_SIGNAL_SCORE=3
-LONG_BREAKOUT_ENABLED=true
-LONG_BREAKOUT_WINDOW_MINUTES=30
-LONG_BREAKOUT_MIN_PRICE_CHANGE_PCT=0.5
-LONG_BREAKOUT_MAX_PRICE_CHANGE_PCT=18
-LONG_BREAKOUT_MIN_OI_CHANGE_PCT=0.5
-LONG_BREAKOUT_MIN_CVD_DELTA_USDT=3000
-LONG_BREAKOUT_MAX_CURRENT_FROM_BASE_PCT=60
-LONG_BREAKOUT_MIN_SIGNAL_SCORE=4
-LONG_SQUEEZE_ENABLED=true
-LONG_SQUEEZE_LOOKBACK_DAYS=21
-LONG_SQUEEZE_MAX_BASE_RANGE_PCT=25
-LONG_SQUEEZE_MAX_DIST_FROM_BASE_HIGH_PCT=3
-LONG_SQUEEZE_WINDOW_MINUTES=30
-LONG_SQUEEZE_MIN_PRICE_CHANGE_PCT=0.2
-LONG_SQUEEZE_MAX_PRICE_CHANGE_PCT=15
-LONG_SQUEEZE_MIN_VOLUME_BURST_RATIO=3
-LONG_SQUEEZE_MIN_SIGNAL_SCORE=4
-LONG_SQUEEZE_STRONG_NEGATIVE_FUNDING_PCT=-0.05
-LONG_SQUEEZE_MIN_OI_TREND_PCT=3
-SPRING_MIN_SCORE=3
-SPRING_MAX_PER_SCAN=10
-SLEEPER_SCAN_ENABLED=true
-SLEEPER_MIN_TURNOVER_24H_USDT=250000
-SLEEPER_MAX_SYMBOLS=150
-SLEEPER_SCAN_INTERVAL_MINUTES=10
-WATCHLIST_ENABLED=false
+STATUS_COMMANDS_ENABLED=true
+STATUS_POLL_INTERVAL_SECONDS=5
 CANDIDATE_TRACKING_ENABLED=true
 HISTORY_SNAPSHOT_RETENTION_DAYS=7
 WATCHLIST_RETENTION_DAYS=7
 WATCHLIST_COOLDOWN_MINUTES=120
 WATCHLIST_MAX_ALERTS_PER_SCAN=5
-ALERT_SCORE_IMPROVEMENT=1
-STATUS_COMMANDS_ENABLED=true
-STATUS_POLL_INTERVAL_SECONDS=5
-ORDERBOOK_ENABLED=true
-ORDERBOOK_LIMIT=100
-ORDERBOOK_DEPTH_PCT=1
-ORDERBOOK_CACHE_SECONDS=300
 
-PUMP_SCAN_INTERVAL_SECONDS=60
-PUMP_WINDOW_MINUTES=15
-PUMP_LOOKBACK_DAYS=2
-PUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=20
-PUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=5
-PUMP_MAX_OI_CHANGE_PCT=0
-PUMP_OI_DROP_RATIO_TO_DRAWDOWN=0.3
-PUMP_MIN_NEGATIVE_CVD_CHANGE_PCT=3
-PUMP_MIN_NEGATIVE_CVD_DELTA_USDT=5000
-PUMP_MAX_PRICE_CHANGE_WINDOW_PCT=0
-PUMP_MIN_TURNOVER_24H_USDT=5000000
-PUMP_MAX_SYMBOLS=200
-PUMP_MIN_SIGNAL_SCORE=5
-PUMP_WATCHLIST_MIN_SCORE=5
-PUMP_CONSECUTIVE_CHECKS=1
-PUMP_ALERT_COOLDOWN_MINUTES=240
-PUMP_ALERT_SCORE_IMPROVEMENT=1
-SHORT_BREAKDOWN_ENABLED=true
-SHORT_BREAKDOWN_MIN_OI_GROWTH_PCT=0
-SHORT_BREAKDOWN_MAX_PRICE_CHANGE_WINDOW_PCT=-0.5
-SHORT_BREAKDOWN_MIN_SIGNAL_SCORE=5
-SHORT_LONG_TRAP_ENABLED=true
-SHORT_LONG_TRAP_MIN_DRAWDOWN_FROM_HIGH_PCT=2
-SHORT_LONG_TRAP_MIN_OI_GROWTH_PCT=2
-SHORT_LONG_TRAP_MAX_PRICE_CHANGE_WINDOW_PCT=1
-SHORT_LONG_TRAP_MIN_SIGNAL_SCORE=5
+BYBIT_BASE_URL=https://api.bybit.com
+BYBIT_MIN_REQUEST_INTERVAL_SECONDS=0.35
+BYBIT_RATE_LIMIT_BACKOFF_SECONDS=3
+BYBIT_MAX_RETRIES=2
+BINANCE_BASE_URL=https://fapi.binance.com
 
 DUMP_ENABLED=true
 DUMP_SCAN_INTERVAL_SECONDS=120
@@ -146,49 +67,39 @@ DUMP_CONSECUTIVE_CHECKS=1
 DUMP_SYMBOL_COOLDOWN_MINUTES=60
 DUMP_ALERT_COOLDOWN_MINUTES=45
 DUMP_ALERT_SCORE_IMPROVEMENT=2
-
-BYBIT_BASE_URL=https://api.bybit.com
-BINANCE_BASE_URL=https://fapi.binance.com
-BINANCE_CONFIRM_ENABLED=false
-BINANCE_CONFIRMATION_REQUIRED=false
-BINANCE_MIN_QUOTE_VOLUME_24H_USDT=10000000
 ```
-
-`ALERT_COOLDOWN_MINUTES=240` и `PUMP_ALERT_COOLDOWN_MINUTES=240` убирают повторный спам по одной монете. Повтор возможен только после 4 часов и только если сила сигнала стала выше минимум на `1`.
-`ORDERBOOK_ENABLED=true` включает спред и глубину стакана в сигналах. Стакан берется только для монет рядом с сигналом, чтобы не упираться в лимиты API.
 
 ## Telegram-кнопки
 
 ```text
-📊 Статус - текущий прогресс сканеров и причины отсечения
-⚙️ Настройки - реальные настройки, которые применил бот
-📈 Статистика - статистика сигналов и последние сигналы
-❓ Почему нет сигналов - подробные причины отсечения
-🎯 Ближайшие - топ монет, которые ближе всего к сигналу
-🕘 Последние сигналы - последние 10 сигналов из базы
-🟢 LONG статус - отдельный статус long-сканера
-🔴 PUMP статус - отдельный статус pump-сканера
-🔻 DUMP BYBIT - отдельный статус скринера слива по Bybit
-🔻 DUMP BINANCE - отдельный статус скринера слива по Binance
-⏸ Пауза / ▶️ Старт - временно остановить или запустить оба сканера
+📊 Статус - текущий прогресс DUMP-сканеров
+⚙️ Настройки - активные dump-only настройки
+📈 Статистика - статистика сигналов
+❓ Почему нет сигналов - причины отсечения
+🎯 Ближайшие - кандидаты из последнего скана
+🕘 Последние сигналы - последние сигналы из базы
+🔻 DUMP BYBIT - статус Bybit dump-сканера
+🔻 DUMP BINANCE - статус Binance dump-сканера
+⏸ Пауза / ▶️ Старт - временно остановить или запустить dump-сканеры
 ```
 
 Если кнопки не появились, напиши боту `/start` или `меню`.
-Старые команды `/status`, `/status long`, `/status pump`, `/status dump bybit`, `/status dump binance`, `/settings`, `/stats`, `/why`, `/last`, `/closest`, `/pause`, `/resume` тоже работают.
 
-## Важно
+## Что ищет DUMP TREND
 
-Не загружай `.env`, `state.json`, `pump_state.json`, `__pycache__`.
+Сигнал ищет начало или продолжение слива:
 
-Архив `bybit-scanner-bothost.zip` уже собран без этих файлов.
+- до этого был разгон;
+- цена откатилась от high;
+- за рабочее окно цена падает;
+- futures CVD показывает продажи;
+- OI и funding добавляют силу, но не являются единственным решением.
 
-## База динамики
-
-Бот сохраняет динамику в SQLite:
+Сообщение в Telegram начинается так:
 
 ```text
-$DATA_DIR/scanner.db
+🔻 DUMP TREND | BYBIT
+🔻 DUMP TREND | BINANCE
 ```
 
-Там хранятся снимки рынка, история сигналов, расчет результата сигналов и почти сигналы.
-Старые рыночные снимки и почти сигналы автоматически чистятся по настройкам retention, чтобы база не разрасталась бесконечно.
+`DUMP_SYMBOL_COOLDOWN_MINUTES` защищает от дублей между биржами: если монета уже пришла с Binance, Bybit не отправит такой же dump-сигнал по этой монете до конца cooldown, и наоборот.
