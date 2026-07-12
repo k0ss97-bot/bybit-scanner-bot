@@ -323,7 +323,7 @@ def get_settings() -> Settings:
         dump_scan_interval_seconds=_int("DUMP_SCAN_INTERVAL_SECONDS", 120),
         dump_structure_cache_minutes=_int("DUMP_STRUCTURE_CACHE_MINUTES", 30),
         dump_min_turnover_24h_usdt=_float("DUMP_MIN_TURNOVER_24H_USDT", 2000000),
-        dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 40),
+        dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 100),
         dump_require_bybit_listing=_bool("DUMP_REQUIRE_BYBIT_LISTING", True),
         dump_bybit_symbol_cache_minutes=_int("DUMP_BYBIT_SYMBOL_CACHE_MINUTES", 15),
         dump_evaluation_enabled=_bool("DUMP_EVALUATION_ENABLED", True),
