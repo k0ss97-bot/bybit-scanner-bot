@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import threading
 import time
@@ -78,17 +79,20 @@ class DumpScanner:
         store: StateStore,
         settings: Settings,
         history: HistoryStore | None = None,
+        allowed_symbols_provider: Callable[[], set[str]] | None = None,
     ) -> None:
         self.source = source.upper()
         self.client = client
         self.store = store
         self.settings = settings
         self.history = history
+        self.allowed_symbols_provider = allowed_symbols_provider
         self.structure_cache: dict[str, DumpStructureCacheEntry] = {}
 
     def scan_once(self, progress_callback=None) -> DumpScanResult:
         now = int(time.time())
-        tickers = self._select_tickers()
+        rejection_reasons: dict[str, int] = {}
+        tickers = self._select_tickers(now, rejection_reasons)
         if progress_callback is not None:
             progress_callback(0, len(tickers))
 
@@ -96,16 +100,21 @@ class DumpScanner:
         watchlist_alerts: list[DumpWatchlistAlert] = []
         failed_symbols = 0
         skipped_symbols = 0
-        rejection_reasons: dict[str, int] = {}
 
-        for index, ticker in enumerate(tickers, start=1):
+        for index, (source_rank, ticker) in enumerate(tickers, start=1):
             try:
                 state = self.store.get_symbol(ticker.symbol)
                 open_interest = self._get_open_interest(ticker)
                 new_trades = self._update_cvd(ticker.symbol, state)
                 self._add_snapshot(now, ticker, open_interest, state, new_trades)
 
-                signal, watchlist_alert = self._build_signal(now, ticker, state, rejection_reasons)
+                signal, watchlist_alert = self._build_signal(
+                    now,
+                    ticker,
+                    state,
+                    rejection_reasons,
+                    source_rank,
+                )
                 if signal is not None:
                     state.last_alert_ts = now
                     state.last_alert_score = signal.signal_score
@@ -160,32 +169,165 @@ class DumpScanner:
             rejection_reasons=rejection_reasons,
         )
 
-    def _select_tickers(self) -> list[Any]:
+    def _select_tickers(
+        self,
+        now: int,
+        rejection_reasons: dict[str, int],
+    ) -> list[tuple[int, Any]]:
         if isinstance(self.client, BinanceClient):
-            tickers = [
-                ticker
-                for ticker in self.client.get_usdt_perp_tickers().values()
-                if ticker.quote_volume_24h >= self.settings.dump_min_turnover_24h_usdt
-                and ticker.price > 0
-                and ticker.high_price_24h > 0
-            ]
-            tickers.sort(key=lambda item: item.quote_volume_24h, reverse=True)
-            return tickers[: self.settings.dump_max_symbols]
+            raw_tickers = list(self.client.get_usdt_perp_tickers().values())
+            raw_tickers.sort(key=lambda item: item.quote_volume_24h, reverse=True)
+            allowed_symbols = self._allowed_symbols()
+            if allowed_symbols is not None and not allowed_symbols:
+                count_reason(rejection_reasons, "bybit_listing_unavailable")
+                return []
 
-        tickers = [
-            ticker
-            for ticker in self.client.get_linear_tickers()
-            if ticker.turnover_24h >= self.settings.dump_min_turnover_24h_usdt
-            and ticker.open_interest > 0
+            ranked_tickers: list[tuple[int, Any]] = []
+            not_bybit_count = 0
+            for source_rank, ticker in enumerate(raw_tickers, start=1):
+                if not self._has_minimum_market_data(ticker):
+                    continue
+                if allowed_symbols is not None and ticker.symbol not in allowed_symbols:
+                    not_bybit_count += 1
+                    if not_bybit_count <= self.settings.dump_max_evaluation_symbols:
+                        self._record_selection_evaluation(
+                            now=now,
+                            ticker=ticker,
+                            source_rank=source_rank,
+                            status="not_on_bybit",
+                            reason="not_tradable_on_bybit",
+                            missing_checks=["bybit_listing"],
+                        )
+                    continue
+                ranked_tickers.append((source_rank, ticker))
+
+            if not_bybit_count:
+                rejection_reasons["not_on_bybit"] = (
+                    rejection_reasons.get("not_on_bybit", 0) + not_bybit_count
+                )
+            return self._select_top_ranked(now, ranked_tickers, rejection_reasons)
+
+        raw_tickers = list(self.client.get_linear_tickers())
+        raw_tickers.sort(key=lambda item: item.turnover_24h, reverse=True)
+        ranked_tickers = [
+            (source_rank, ticker)
+            for source_rank, ticker in enumerate(raw_tickers, start=1)
+            if self._has_minimum_market_data(ticker)
+            and getattr(ticker, "open_interest", 0) > 0
+        ]
+        return self._select_top_ranked(now, ranked_tickers, rejection_reasons)
+
+    def _select_top_ranked(
+        self,
+        now: int,
+        ranked_tickers: list[tuple[int, Any]],
+        rejection_reasons: dict[str, int],
+    ) -> list[tuple[int, Any]]:
+        selected = ranked_tickers[: self.settings.dump_max_symbols]
+        outside = ranked_tickers[self.settings.dump_max_symbols :]
+        if outside:
+            rejection_reasons["outside_top_symbols"] = (
+                rejection_reasons.get("outside_top_symbols", 0) + len(outside)
+            )
+            for source_rank, ticker in outside[: self.settings.dump_max_evaluation_symbols]:
+                self._record_selection_evaluation(
+                    now=now,
+                    ticker=ticker,
+                    source_rank=source_rank,
+                    status="outside_top_symbols",
+                    reason=f"outside_top_{self.settings.dump_max_symbols}",
+                    missing_checks=[f"top_{self.settings.dump_max_symbols}"],
+                )
+        return selected
+
+    def _allowed_symbols(self) -> set[str] | None:
+        if self.allowed_symbols_provider is None:
+            return None
+        return set(self.allowed_symbols_provider())
+
+    def _has_minimum_market_data(self, ticker: Ticker | BinanceTicker) -> bool:
+        return (
+            self._turnover(ticker) >= self.settings.dump_min_turnover_24h_usdt
             and ticker.price > 0
             and ticker.high_price_24h > 0
-        ]
-        tickers.sort(key=lambda item: item.turnover_24h, reverse=True)
-        return tickers[: self.settings.dump_max_symbols]
+        )
+
+    def _record_selection_evaluation(
+        self,
+        *,
+        now: int,
+        ticker: Ticker | BinanceTicker,
+        source_rank: int,
+        status: str,
+        reason: str,
+        missing_checks: list[str],
+    ) -> None:
+        self._record_signal_evaluation(
+            now=now,
+            ticker=ticker,
+            source_rank=source_rank,
+            status=status,
+            reason=reason,
+            score=0,
+            selected=False,
+            turnover_24h=self._turnover(ticker),
+            funding_rate=ticker.funding_rate,
+            passed_checks=[],
+            missing_checks=missing_checks,
+        )
+
+    def _record_signal_evaluation(
+        self,
+        *,
+        now: int,
+        ticker: Ticker | BinanceTicker,
+        source_rank: int,
+        status: str,
+        reason: str,
+        score: int,
+        turnover_24h: float,
+        selected: bool = True,
+        price_growth_lookback_pct: float = 0.0,
+        drawdown_from_high_pct: float = 0.0,
+        oi_change_pct: float = 0.0,
+        cvd_delta_usdt: float = 0.0,
+        price_change_window_pct: float = 0.0,
+        funding_rate: float = 0.0,
+        passed_checks: list[str] | None = None,
+        missing_checks: list[str] | None = None,
+        payload: str = "",
+    ) -> None:
+        if self.history is None or not self.settings.dump_evaluation_enabled:
+            return
+        try:
+            self.history.record_scanner_evaluation(
+                scanner=f"dump_{self.source.lower()}",
+                source=self.source,
+                symbol=ticker.symbol,
+                ts=now,
+                source_rank=source_rank,
+                selected=selected,
+                status=status,
+                reason=reason,
+                score=score,
+                price=ticker.price,
+                turnover_24h=turnover_24h,
+                price_growth_lookback_pct=price_growth_lookback_pct,
+                drawdown_from_high_pct=drawdown_from_high_pct,
+                oi_change_pct=oi_change_pct,
+                cvd_delta_usdt=cvd_delta_usdt,
+                price_change_window_pct=price_change_window_pct,
+                funding_rate=funding_rate,
+                passed_checks=passed_checks,
+                missing_checks=missing_checks,
+                payload=payload,
+            )
+        except Exception as error:
+            print(f"{self.source} {ticker.symbol}: evaluation write failed: {error}", flush=True)
 
     def _get_open_interest(self, ticker: Ticker | BinanceTicker) -> float:
         if isinstance(self.client, BinanceClient):
-            return float(ticker.open_interest)
+            return self.client.get_open_interest(ticker.symbol)
         return float(ticker.open_interest)
 
     def _update_cvd(self, symbol: str, state: SymbolState) -> int:
@@ -240,16 +382,39 @@ class DumpScanner:
         ticker: Ticker | BinanceTicker,
         state: SymbolState,
         rejection_reasons: dict[str, int],
+        source_rank: int,
     ) -> tuple[DumpSignal | None, DumpWatchlistAlert | None]:
         current = state.snapshots[-1]
         previous = self._find_window_snapshot(current.ts, state)
         if previous is None:
             count_reason(rejection_reasons, "warmup_no_window")
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="warmup",
+                reason="warmup_no_window",
+                score=0,
+                turnover_24h=self._turnover(ticker),
+                funding_rate=current.funding,
+                missing_checks=["window_snapshot"],
+            )
             return None, None
 
         structure = self._get_dump_structure(ticker.symbol, ticker.price)
         if structure is None:
             count_reason(rejection_reasons, "no_dump_structure")
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="rejected",
+                reason="no_dump_structure",
+                score=0,
+                turnover_24h=self._turnover(ticker),
+                funding_rate=current.funding,
+                missing_checks=["dump_structure"],
+            )
             return None, None
 
         price_growth_lookback_pct, drawdown_from_high_pct, high_price = structure
@@ -286,7 +451,7 @@ class DumpScanner:
                     count_reason(rejection_reasons, reason)
             if signal_score < self.settings.dump_min_signal_score:
                 count_reason(rejection_reasons, "score")
-            return None, self._build_watchlist_alert(
+            watchlist_alert = self._build_watchlist_alert(
                 ticker=ticker,
                 signal_score=signal_score,
                 checks={**checks, **soft_checks},
@@ -297,22 +462,96 @@ class DumpScanner:
                 price_change_window_pct=price_change_window_pct,
                 turnover_24h=turnover_24h,
             )
+            missing_checks = [name for name, passed in {**checks, **soft_checks}.items() if not passed]
+            if signal_score < self.settings.dump_min_signal_score:
+                missing_checks.append("score")
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="watchlist" if watchlist_alert is not None else "rejected",
+                reason=",".join(missing_checks) or "checks_failed",
+                score=signal_score,
+                turnover_24h=turnover_24h,
+                price_growth_lookback_pct=price_growth_lookback_pct,
+                drawdown_from_high_pct=drawdown_from_high_pct,
+                oi_change_pct=oi_change_pct,
+                cvd_delta_usdt=cvd_delta,
+                price_change_window_pct=price_change_window_pct,
+                funding_rate=current.funding,
+                passed_checks=[
+                    name for name, passed in {**checks, **soft_checks}.items() if passed
+                ],
+                missing_checks=missing_checks,
+            )
+            return None, watchlist_alert
 
         if (
             now - state.last_alert_ts < self.settings.dump_alert_cooldown_minutes * 60
             and signal_score < state.last_alert_score + self.settings.dump_alert_score_improvement
         ):
             count_reason(rejection_reasons, "cooldown")
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="cooldown",
+                reason="alert_cooldown",
+                score=signal_score,
+                turnover_24h=turnover_24h,
+                price_growth_lookback_pct=price_growth_lookback_pct,
+                drawdown_from_high_pct=drawdown_from_high_pct,
+                oi_change_pct=oi_change_pct,
+                cvd_delta_usdt=cvd_delta,
+                price_change_window_pct=price_change_window_pct,
+                funding_rate=current.funding,
+                passed_checks=[name for name, passed in {**checks, **soft_checks}.items() if passed],
+                missing_checks=["alert_cooldown"],
+            )
             return None, None
 
         state.consecutive_matches += 1
         if state.consecutive_matches < self.settings.dump_consecutive_checks:
             count_reason(rejection_reasons, "confirmations_waiting")
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="confirming",
+                reason="confirmations_waiting",
+                score=signal_score,
+                turnover_24h=turnover_24h,
+                price_growth_lookback_pct=price_growth_lookback_pct,
+                drawdown_from_high_pct=drawdown_from_high_pct,
+                oi_change_pct=oi_change_pct,
+                cvd_delta_usdt=cvd_delta,
+                price_change_window_pct=price_change_window_pct,
+                funding_rate=current.funding,
+                passed_checks=[name for name, passed in {**checks, **soft_checks}.items() if passed],
+                missing_checks=["confirmations_waiting"],
+            )
             return None, None
         if not self._claim_symbol_alert(now, ticker.symbol, signal_score, rejection_reasons):
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="cooldown",
+                reason="symbol_cooldown",
+                score=signal_score,
+                turnover_24h=turnover_24h,
+                price_growth_lookback_pct=price_growth_lookback_pct,
+                drawdown_from_high_pct=drawdown_from_high_pct,
+                oi_change_pct=oi_change_pct,
+                cvd_delta_usdt=cvd_delta,
+                price_change_window_pct=price_change_window_pct,
+                funding_rate=current.funding,
+                passed_checks=[name for name, passed in {**checks, **soft_checks}.items() if passed],
+                missing_checks=["symbol_cooldown"],
+            )
             return None, None
 
-        return DumpSignal(
+        signal = DumpSignal(
             source=self.source,
             symbol=ticker.symbol,
             window_minutes=self.settings.dump_window_minutes,
@@ -329,7 +568,26 @@ class DumpScanner:
             turnover_24h=turnover_24h,
             new_trades=current.new_trades,
             consecutive_matches=state.consecutive_matches,
-        ), None
+        )
+        self._record_signal_evaluation(
+            now=now,
+            ticker=ticker,
+            source_rank=source_rank,
+            status="signal",
+            reason="signal",
+            score=signal_score,
+            turnover_24h=turnover_24h,
+            price_growth_lookback_pct=price_growth_lookback_pct,
+            drawdown_from_high_pct=drawdown_from_high_pct,
+            oi_change_pct=oi_change_pct,
+            cvd_delta_usdt=cvd_delta,
+            price_change_window_pct=price_change_window_pct,
+            funding_rate=current.funding,
+            passed_checks=[name for name, passed in {**checks, **soft_checks}.items() if passed],
+            missing_checks=[],
+            payload=str(signal),
+        )
+        return signal, None
 
     def _build_watchlist_alert(
         self,

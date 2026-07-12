@@ -13,6 +13,8 @@
 
 Старые LONG, PUMP, SHORT и SPRING ветки убраны из рабочего запуска. Их будем собирать заново позже.
 
+Binance-сканер использует Binance-данные только по тем USDT-перпетам, которые есть на Bybit. Если монеты нет на Bybit, бот не отправляет по ней сигнал.
+
 ## Запуск
 
 ```bash
@@ -66,6 +68,8 @@ DUMP_ALERT_COOLDOWN_MINUTES=45
 `TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240` не дает одной монете спамить в Telegram чаще 1 раза за 4 часа.
 
 `DUMP_SYMBOL_COOLDOWN_MINUTES=60` защищает от дубля между Binance и Bybit по одной монете.
+
+`DUMP_EVALUATION_ENABLED=true` сохраняет последнюю причину по монете: была ли она вне `DUMP_MAX_SYMBOLS`, не торгуется ли на Bybit, ушла ли на cooldown или не прошла условия.
 
 ## Telegram-команды
 

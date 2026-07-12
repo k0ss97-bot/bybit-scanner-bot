@@ -132,6 +132,46 @@ class HistoryStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS scanner_evaluations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scanner TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    source_rank INTEGER NOT NULL,
+                    selected INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    turnover_24h REAL NOT NULL,
+                    price_growth_lookback_pct REAL NOT NULL,
+                    drawdown_from_high_pct REAL NOT NULL,
+                    oi_change_pct REAL NOT NULL,
+                    cvd_delta_usdt REAL NOT NULL,
+                    price_change_window_pct REAL NOT NULL,
+                    funding_rate REAL NOT NULL,
+                    passed_checks TEXT NOT NULL,
+                    missing_checks TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    UNIQUE(scanner, symbol)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scanner_evaluations_scanner_status_rank
+                ON scanner_evaluations(scanner, status, source_rank)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scanner_evaluations_ts
+                ON scanner_evaluations(ts)
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS dump_symbol_cooldowns (
                     symbol TEXT PRIMARY KEY,
                     ts INTEGER NOT NULL,
@@ -203,6 +243,11 @@ class HistoryStore:
                 watchlist_cutoff = now - watchlist_retention_days * 24 * 60 * 60
                 cursor = conn.execute(
                     "DELETE FROM watchlist_candidates WHERE ts < ?",
+                    (watchlist_cutoff,),
+                )
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+                cursor = conn.execute(
+                    "DELETE FROM scanner_evaluations WHERE ts < ?",
                     (watchlist_cutoff,),
                 )
                 deleted += cursor.rowcount if cursor.rowcount != -1 else 0
@@ -549,6 +594,117 @@ class HistoryStore:
                 ),
             )
         return True
+
+    def record_scanner_evaluation(
+        self,
+        *,
+        scanner: str,
+        source: str,
+        symbol: str,
+        ts: int,
+        source_rank: int,
+        selected: bool,
+        status: str,
+        reason: str,
+        score: int,
+        price: float,
+        turnover_24h: float,
+        price_growth_lookback_pct: float = 0.0,
+        drawdown_from_high_pct: float = 0.0,
+        oi_change_pct: float = 0.0,
+        cvd_delta_usdt: float = 0.0,
+        price_change_window_pct: float = 0.0,
+        funding_rate: float = 0.0,
+        passed_checks: list[str] | None = None,
+        missing_checks: list[str] | None = None,
+        payload: str = "",
+    ) -> None:
+        passed = ",".join(passed_checks or [])
+        missing = ",".join(missing_checks or [])
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO scanner_evaluations (
+                    scanner, source, symbol, ts, source_rank, selected, status,
+                    reason, score, price, turnover_24h,
+                    price_growth_lookback_pct, drawdown_from_high_pct,
+                    oi_change_pct, cvd_delta_usdt, price_change_window_pct,
+                    funding_rate, passed_checks, missing_checks, payload
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scanner, symbol) DO UPDATE SET
+                    source = excluded.source,
+                    ts = excluded.ts,
+                    source_rank = excluded.source_rank,
+                    selected = excluded.selected,
+                    status = excluded.status,
+                    reason = excluded.reason,
+                    score = excluded.score,
+                    price = excluded.price,
+                    turnover_24h = excluded.turnover_24h,
+                    price_growth_lookback_pct = excluded.price_growth_lookback_pct,
+                    drawdown_from_high_pct = excluded.drawdown_from_high_pct,
+                    oi_change_pct = excluded.oi_change_pct,
+                    cvd_delta_usdt = excluded.cvd_delta_usdt,
+                    price_change_window_pct = excluded.price_change_window_pct,
+                    funding_rate = excluded.funding_rate,
+                    passed_checks = excluded.passed_checks,
+                    missing_checks = excluded.missing_checks,
+                    payload = excluded.payload
+                """,
+                (
+                    scanner,
+                    source,
+                    symbol,
+                    ts,
+                    source_rank,
+                    1 if selected else 0,
+                    status,
+                    reason,
+                    score,
+                    price,
+                    turnover_24h,
+                    price_growth_lookback_pct,
+                    drawdown_from_high_pct,
+                    oi_change_pct,
+                    cvd_delta_usdt,
+                    price_change_window_pct,
+                    funding_rate,
+                    passed,
+                    missing,
+                    payload,
+                ),
+            )
+
+    def get_recent_scanner_evaluations(
+        self,
+        *,
+        scanner: str | None = None,
+        status: str | None = None,
+        limit: int = 10,
+    ) -> list[tuple]:
+        conditions = []
+        params: list[object] = []
+        if scanner is not None:
+            conditions.append("scanner = ?")
+            params.append(scanner)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        with self._connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT scanner, source, symbol, ts, source_rank, status, reason,
+                       score, price, turnover_24h, missing_checks
+                FROM scanner_evaluations
+                {where_sql}
+                ORDER BY ts DESC, source_rank ASC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
 
     def get_trend_change(
         self,

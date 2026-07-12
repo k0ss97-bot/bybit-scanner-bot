@@ -172,6 +172,10 @@ class Settings:
     dump_structure_cache_minutes: int
     dump_min_turnover_24h_usdt: float
     dump_max_symbols: int
+    dump_require_bybit_listing: bool
+    dump_bybit_symbol_cache_minutes: int
+    dump_evaluation_enabled: bool
+    dump_max_evaluation_symbols: int
     dump_min_price_growth_lookback_pct: float
     dump_min_drawdown_from_high_pct: float
     dump_min_price_drop_window_pct: float
@@ -320,6 +324,10 @@ def get_settings() -> Settings:
         dump_structure_cache_minutes=_int("DUMP_STRUCTURE_CACHE_MINUTES", 30),
         dump_min_turnover_24h_usdt=_float("DUMP_MIN_TURNOVER_24H_USDT", 2000000),
         dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 40),
+        dump_require_bybit_listing=_bool("DUMP_REQUIRE_BYBIT_LISTING", True),
+        dump_bybit_symbol_cache_minutes=_int("DUMP_BYBIT_SYMBOL_CACHE_MINUTES", 15),
+        dump_evaluation_enabled=_bool("DUMP_EVALUATION_ENABLED", True),
+        dump_max_evaluation_symbols=_int("DUMP_MAX_EVALUATION_SYMBOLS", 120),
         dump_min_price_growth_lookback_pct=_float("DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 15),
         dump_min_drawdown_from_high_pct=_float("DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 4),
         dump_min_price_drop_window_pct=_float("DUMP_MIN_PRICE_DROP_WINDOW_PCT", 0.5),

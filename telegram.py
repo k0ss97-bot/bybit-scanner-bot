@@ -72,15 +72,16 @@ class TelegramNotifier:
 
 def format_dump_signal(signal: DumpSignal) -> str:
     source = signal.source.upper()
-    chart_url = (
-        f"https://www.binance.com/en/futures/{signal.symbol}"
-        if source == "BINANCE"
-        else f"https://www.bybit.com/trade/usdt/{signal.symbol}"
+    bybit_chart_url = f"https://www.bybit.com/trade/usdt/{signal.symbol}"
+    data_chart_url = f"https://www.binance.com/en/futures/{signal.symbol}"
+    data_chart_line = (
+        f"График данных Binance: {data_chart_url}\n" if source == "BINANCE" else ""
     )
     return (
         f"🔻 DUMP TREND | {source}\n\n"
         f"Монета: {signal.symbol}\n"
-        f"График: {chart_url}\n"
+        f"График Bybit: {bybit_chart_url}\n"
+        f"{data_chart_line}"
         f"Окно: {signal.window_minutes}m\n\n"
         f"Сила сигнала: {signal.signal_score}/10\n"
         f"Рост за {signal.lookback_days}d: {signal.price_growth_lookback_pct:+.2f}%\n"

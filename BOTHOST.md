@@ -55,6 +55,10 @@ DUMP_LOOKBACK_DAYS=2
 DUMP_STRUCTURE_CACHE_MINUTES=30
 DUMP_MIN_TURNOVER_24H_USDT=2000000
 DUMP_MAX_SYMBOLS=40
+DUMP_REQUIRE_BYBIT_LISTING=true
+DUMP_BYBIT_SYMBOL_CACHE_MINUTES=15
+DUMP_EVALUATION_ENABLED=true
+DUMP_MAX_EVALUATION_SYMBOLS=120
 DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=15
 DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=4
 DUMP_MIN_PRICE_DROP_WINDOW_PCT=0.5
@@ -103,3 +107,7 @@ DUMP_ALERT_SCORE_IMPROVEMENT=2
 ```
 
 `DUMP_SYMBOL_COOLDOWN_MINUTES` защищает от дублей между биржами: если монета уже пришла с Binance, Bybit не отправит такой же dump-сигнал по этой монете до конца cooldown, и наоборот.
+
+`DUMP_REQUIRE_BYBIT_LISTING=true` оставляет Binance-данные только для монет, которые есть на Bybit linear USDT. Если монеты нет на Bybit, бот не покажет по ней сигнал.
+
+`DUMP_EVALUATION_ENABLED=true` записывает последнюю причину по монетам: прошла ли монета в рабочий top, была ли вне `DUMP_MAX_SYMBOLS`, ушла ли на cooldown или не прошла условия сигнала.

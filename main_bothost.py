@@ -113,6 +113,35 @@ def data_path(filename: str) -> str:
     return str(data_dir / filename)
 
 
+class BybitSymbolCache:
+    def __init__(self, client: BybitClient, ttl_minutes: int) -> None:
+        self.client = client
+        self.ttl_seconds = max(1, ttl_minutes) * 60
+        self.symbols: set[str] = set()
+        self.loaded_ts = 0
+
+    def get_symbols(self) -> set[str]:
+        now = int(time.time())
+        if self.symbols and now - self.loaded_ts < self.ttl_seconds:
+            return set(self.symbols)
+
+        try:
+            tickers = self.client.get_linear_tickers()
+            symbols = {
+                ticker.symbol
+                for ticker in tickers
+                if ticker.symbol.endswith("USDT") and ticker.price > 0
+            }
+            if symbols:
+                self.symbols = symbols
+                self.loaded_ts = now
+                print(f"Bybit symbol cache updated: symbols={len(symbols)}", flush=True)
+        except Exception as error:
+            print(f"Bybit symbol cache update failed: {error}", flush=True)
+
+        return set(self.symbols)
+
+
 def format_rejections(rejection_reasons: dict[str, int], limit: int = 5) -> str:
     if not rejection_reasons:
         return "none"
@@ -130,6 +159,7 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "signals": len(result.signals),
             "watchlist": len(result.watchlist_alerts),
             "failed": result.failed_symbols,
+            "skipped": result.skipped_symbols,
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
             "rejection_reasons": dict(result.rejection_reasons),
@@ -220,7 +250,8 @@ def format_status_message() -> str:
             "\n"
             f"{scanner}: обновлено {ago}s назад\n"
             f"Монет: {data['symbols']}, сигналов: {data['signals']}, "
-            f"почти сигналов: {data['watchlist']}, ошибок: {data['failed']}\n"
+            f"почти сигналов: {data['watchlist']}, "
+            f"пропущено: {data.get('skipped', 0)}, ошибок: {data['failed']}\n"
             f"Причины отсечения: {data['rejections']}"
         )
     return "\n".join(lines)
@@ -251,7 +282,8 @@ def format_single_status_message(scanner: str) -> str:
     return (
         f"{scanner}: обновлено {ago}s назад\n"
         f"Монет: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
-        f"почти сигналов: {data.get('watchlist', 0)}, ошибок: {data.get('failed', 0)}\n"
+        f"почти сигналов: {data.get('watchlist', 0)}, "
+        f"пропущено: {data.get('skipped', 0)}, ошибок: {data.get('failed', 0)}\n"
         f"Причины отсечения: {data.get('rejections', 'нет данных')}"
     )
 
@@ -271,6 +303,10 @@ def format_settings_message(settings) -> str:
         f"DUMP_LOOKBACK_DAYS={settings.dump_lookback_days}\n"
         f"DUMP_MIN_TURNOVER_24H_USDT={settings.dump_min_turnover_24h_usdt:g}\n"
         f"DUMP_MAX_SYMBOLS={settings.dump_max_symbols}\n"
+        f"DUMP_REQUIRE_BYBIT_LISTING={str(settings.dump_require_bybit_listing).lower()}\n"
+        f"DUMP_BYBIT_SYMBOL_CACHE_MINUTES={settings.dump_bybit_symbol_cache_minutes}\n"
+        f"DUMP_EVALUATION_ENABLED={str(settings.dump_evaluation_enabled).lower()}\n"
+        f"DUMP_MAX_EVALUATION_SYMBOLS={settings.dump_max_evaluation_symbols}\n"
         f"DUMP_STRUCTURE_CACHE_MINUTES={settings.dump_structure_cache_minutes}\n"
         f"DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.dump_min_price_growth_lookback_pct:g}\n"
         f"DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.dump_min_drawdown_from_high_pct:g}\n"
@@ -337,7 +373,10 @@ def format_stats_message(history: HistoryStore) -> str:
     return "\n".join(lines)
 
 
-def format_rejection_details_message(scanner_filter: str | None = None) -> str:
+def format_rejection_details_message(
+    scanner_filter: str | None = None,
+    history: HistoryStore | None = None,
+) -> str:
     with STATUS_LOCK:
         snapshot = dict(SCANNER_STATUS)
 
@@ -372,7 +411,27 @@ def format_rejection_details_message(scanner_filter: str | None = None) -> str:
             lines.append("Ближайшие:")
             lines.extend(str(item) for item in closest[:5])
 
+        if history is not None:
+            hidden = history.get_recent_scanner_evaluations(
+                scanner=scanner_key(scanner),
+                status="outside_top_symbols",
+                limit=5,
+            )
+            if hidden:
+                lines.append("Вне top лимита, но уже видны в диагностике:")
+                now = int(time.time())
+                for _, source, symbol, ts, rank, status, reason, score, price, turnover, missing in hidden:
+                    age_minutes = int((now - ts) / 60)
+                    lines.append(
+                        f"{source} {symbol}: rank={rank}, цена={price:g}, "
+                        f"оборот={turnover:,.0f}, возраст={age_minutes}m, причина={reason}"
+                    )
+
     return "\n".join(lines)
+
+
+def scanner_key(scanner: str) -> str:
+    return scanner.lower().replace(" ", "_")
 
 
 def format_closest_message(history: HistoryStore) -> str:
@@ -558,11 +617,15 @@ def run_status_loop() -> None:
                 elif why_target is not None:
                     safe_send_message(
                         notifier,
-                        format_rejection_details_message(why_target),
+                        format_rejection_details_message(why_target, history),
                         menu_keyboard(),
                     )
                 elif is_rejections_request(text):
-                    safe_send_message(notifier, format_rejection_details_message(), menu_keyboard())
+                    safe_send_message(
+                        notifier,
+                        format_rejection_details_message(history=history),
+                        menu_keyboard(),
+                    )
                 elif is_recent_signals_request(text):
                     safe_send_message(
                         notifier,
@@ -605,8 +668,16 @@ def run_dump_loop(source: str) -> None:
 
     if source.upper() == "BINANCE":
         client = build_binance_market_client(settings)
+        allowed_symbols_provider = None
+        if settings.dump_require_bybit_listing:
+            bybit_symbol_cache = BybitSymbolCache(
+                build_bybit_client(settings),
+                settings.dump_bybit_symbol_cache_minutes,
+            )
+            allowed_symbols_provider = bybit_symbol_cache.get_symbols
     else:
         client = build_bybit_client(settings)
+        allowed_symbols_provider = None
 
     history = HistoryStore(data_path("scanner.db"))
     scanner = DumpScanner(
@@ -615,6 +686,7 @@ def run_dump_loop(source: str) -> None:
         StateStore(data_path(f"dump_{source.lower()}_state.json")),
         settings,
         history,
+        allowed_symbols_provider=allowed_symbols_provider,
     )
     scanner.store.load()
     notifier = build_notifier(settings)
@@ -643,6 +715,10 @@ def run_dump_loop(source: str) -> None:
                     formatter=format_dump_signal,
                 )
             reviewed = history.update_signal_reviews()
+            history.cleanup_old_data(
+                snapshot_retention_days=settings.history_snapshot_retention_days,
+                watchlist_retention_days=settings.watchlist_retention_days,
+            )
             update_status(scanner_name, result, reviewed)
             maybe_send_rate_warning(scanner_name, result.failed_symbols, notifier)
             print(
