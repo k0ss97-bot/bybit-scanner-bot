@@ -123,9 +123,12 @@ class BinanceClient:
         return trades
 
     def get_daily_klines(self, symbol: str, limit: int = 5) -> list[Kline]:
+        return self.get_klines(symbol, interval="1d", limit=limit)
+
+    def get_klines(self, symbol: str, interval: str = "15m", limit: int = 192) -> list[Kline]:
         data = self._get(
             "/fapi/v1/klines",
-            {"symbol": symbol, "interval": "1d", "limit": limit},
+            {"symbol": symbol, "interval": interval, "limit": limit},
         )
         klines = []
         for item in data:

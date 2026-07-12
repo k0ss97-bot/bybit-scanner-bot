@@ -1,16 +1,21 @@
 from dataclasses import replace
+from io import BytesIO
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from bybit_client import BybitClient, Trade
+from bybit_client import Kline
 from binance_client import BinanceClient, BinanceTicker
+from chart_renderer import render_dump_chart
 from config import get_settings
 from dump_scanner import DumpScanner, MARKET_EVIDENCE, SYMBOL_ALERTS, MarketEvidence
 from history import HistoryStore
 from main_bothost import send_signal_with_symbol_cooldown
 from state import Snapshot, StateStore, SymbolState
+from telegram import TelegramNotifier
 
 
 class FakeBybitClient(BybitClient):
@@ -24,10 +29,16 @@ class FakeBybitClient(BybitClient):
 class FakeNotifier:
     def __init__(self, fail=False):
         self.fail = fail
+        self.photos = []
 
     def send_message(self, text, reply_markup=None):
         if self.fail:
             raise RuntimeError("send failed")
+
+    def send_photo(self, photo, caption=""):
+        if self.fail:
+            raise RuntimeError("photo failed")
+        self.photos.append((photo, caption))
 
 
 class FakeBinanceClient(BinanceClient):
@@ -41,6 +52,47 @@ class FakeBinanceClient(BinanceClient):
             {"a": trade_id, "m": True, "p": "10", "q": "1", "T": trade_id * 10}
             for trade_id in range(start, start + limit)
         ]
+
+
+class FakeChartClient:
+    def get_klines(self, symbol, interval="15m", limit=192):
+        base_ts = 1_700_000_000_000
+        klines = []
+        for index in range(limit):
+            base = 100 + index * 0.05
+            close = base + (0.3 if index % 3 else -0.2)
+            klines.append(
+                Kline(
+                    start_ms=base_ts + index * 15 * 60_000,
+                    open_price=base,
+                    high_price=max(base, close) + 0.4,
+                    low_price=min(base, close) - 0.4,
+                    close_price=close,
+                    volume=1_000 + index,
+                    turnover=100_000 + index * 1_000,
+                )
+            )
+        return klines
+
+
+class FakeChartHistory:
+    def get_market_snapshots(self, **kwargs):
+        base_ts = 1_700_000_000
+        return [
+            (base_ts + index * 120, 100, 1_000 + index * 2, -index * 2_000, 0, 5_000_000)
+            for index in range(120)
+        ]
+
+
+class FakeHttpResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return b'{"ok": true, "result": {}}'
 
 
 class DumpPipelineTests(unittest.TestCase):
@@ -198,6 +250,8 @@ class DumpPipelineTests(unittest.TestCase):
             oi_change_pct=1,
             cvd_delta_usdt=-10_000,
             price_change_window_pct=-1,
+            mode="SHORT_TREND",
+            signal_score=8,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
@@ -222,6 +276,65 @@ class DumpPipelineTests(unittest.TestCase):
             )
             self.assertTrue(sent)
             self.assertEqual(len(history.get_recent_signals()), 1)
+
+    def test_chart_is_sent_after_successful_text_signal(self):
+        signal = SimpleNamespace(
+            symbol="AAAUSDT",
+            price=100,
+            oi_change_pct=1,
+            cvd_delta_usdt=-10_000,
+            price_change_window_pct=-1,
+            mode="SHORT_TREND",
+            signal_score=8,
+        )
+        notifier = FakeNotifier()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            sent = send_signal_with_symbol_cooldown(
+                notifier=notifier,
+                history=history,
+                settings=self.settings,
+                signal=signal,
+                signal_type="dump_binance",
+                formatter=lambda _: "signal",
+                chart_renderer=lambda _: b"png-bytes",
+            )
+            self.assertTrue(sent)
+            self.assertEqual(notifier.photos[0][0], b"png-bytes")
+
+    def test_chart_renderer_creates_1200x900_png(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is not installed in this Python runtime")
+
+        signal = SimpleNamespace(
+            symbol="AAAUSDT",
+            source="BINANCE+BYBIT",
+            mode="SHORT_TREND",
+            signal_score=8,
+            price_growth_lookback_pct=30,
+            drawdown_from_high_pct=-12,
+            oi_change_pct=2,
+            cvd_delta_usdt=-50_000,
+            price_change_window_pct=-2,
+            price=108,
+            high_price=112,
+            confirmation_price_change_pct=-1.5,
+        )
+        png = render_dump_chart(signal, FakeChartClient(), FakeChartHistory())
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        with Image.open(BytesIO(png)) as image:
+            self.assertEqual(image.size, (1200, 900))
+
+    def test_telegram_photo_uses_multipart_upload(self):
+        notifier = TelegramNotifier("token", "chat-id")
+        with patch("telegram.urlopen", return_value=FakeHttpResponse()) as mocked:
+            notifier.send_photo(b"png-bytes", caption="chart")
+        request = mocked.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/sendPhoto"))
+        self.assertIn(b'name="photo"', request.data)
+        self.assertIn(b"png-bytes", request.data)
 
 
 if __name__ == "__main__":

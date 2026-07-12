@@ -619,6 +619,24 @@ class HistoryStore:
                 (limit,),
             ).fetchall()
 
+    def get_market_snapshots(
+        self,
+        *,
+        scanner: str,
+        symbol: str,
+        since_ts: int,
+    ) -> list[tuple]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT ts, price, open_interest, futures_cvd, funding, turnover_24h
+                FROM market_snapshots
+                WHERE scanner = ? AND symbol = ? AND ts >= ?
+                ORDER BY ts ASC
+                """,
+                (scanner, symbol, since_ts),
+            ).fetchall()
+
     def record_watchlist_candidate(
         self,
         *,

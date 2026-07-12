@@ -9,6 +9,7 @@ import traceback
 
 from bybit_client import BybitClient
 from binance_client import BinanceClient
+from chart_renderer import render_dump_chart
 from config import get_settings
 from dump_scanner import DumpScanner
 from history import HistoryStore
@@ -54,6 +55,15 @@ def safe_send_message(
         return False
 
 
+def safe_send_photo(notifier: TelegramNotifier, photo: bytes, caption: str) -> bool:
+    try:
+        notifier.send_photo(photo, caption=caption)
+        return True
+    except Exception as error:
+        print(f"Telegram photo send failed: {error}", flush=True)
+        return False
+
+
 def request_stop(reason: str) -> None:
     if not STOP_EVENT.is_set():
         print(f"Shutdown requested: {reason}", flush=True)
@@ -80,6 +90,7 @@ def send_signal_with_symbol_cooldown(
     signal,
     signal_type: str,
     formatter,
+    chart_renderer=None,
 ) -> bool:
     symbol = str(getattr(signal, "symbol", ""))
     now = int(time.time())
@@ -123,6 +134,21 @@ def send_signal_with_symbol_cooldown(
         price_change_pct=signal.price_change_window_pct,
         payload=str(signal),
     )
+
+    if chart_renderer is not None and settings.dump_chart_enabled:
+        try:
+            chart = chart_renderer(signal)
+            mode_title = {
+                "LIQUIDATION_FLUSH": "Liquidation flush",
+                "SHORT_TREND": "Short trend",
+            }.get(signal.mode, signal.mode)
+            safe_send_photo(
+                notifier,
+                chart,
+                f"{signal.symbol} | {mode_title} | score {signal.signal_score}/10",
+            )
+        except Exception as error:
+            print(f"Chart render failed for {symbol}: {error}", flush=True)
     return True
 
 
@@ -344,6 +370,9 @@ def format_settings_message(settings) -> str:
         f"DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS={settings.dump_cross_exchange_max_age_seconds}\n"
         f"DUMP_LIQUIDATION_MIN_OI_DROP_PCT={settings.dump_liquidation_min_oi_drop_pct:g}\n"
         f"DUMP_TREND_MIN_OI_CHANGE_PCT={settings.dump_trend_min_oi_change_pct:g}\n"
+        f"DUMP_CHART_ENABLED={str(settings.dump_chart_enabled).lower()}\n"
+        f"DUMP_CHART_LOOKBACK_HOURS={settings.dump_chart_lookback_hours}\n"
+        f"DUMP_CHART_INTERVAL={settings.dump_chart_interval}\n"
         f"DUMP_STRUCTURE_CACHE_MINUTES={settings.dump_structure_cache_minutes}\n"
         f"DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.dump_min_price_growth_lookback_pct:g}\n"
         f"DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.dump_min_drawdown_from_high_pct:g}\n"
@@ -741,6 +770,15 @@ def run_dump_loop(source: str) -> None:
                 )
             )
             for signal in result.signals:
+                chart_renderer = None
+                if source.upper() == "BINANCE":
+                    chart_renderer = lambda current_signal: render_dump_chart(
+                        current_signal,
+                        client,
+                        history,
+                        lookback_hours=settings.dump_chart_lookback_hours,
+                        interval=settings.dump_chart_interval,
+                    )
                 send_signal_with_symbol_cooldown(
                     notifier=notifier,
                     history=history,
@@ -748,6 +786,7 @@ def run_dump_loop(source: str) -> None:
                     signal=signal,
                     signal_type=f"dump_{source.lower()}",
                     formatter=format_dump_signal,
+                    chart_renderer=chart_renderer,
                 )
             reviewed = history.update_signal_reviews()
             history.cleanup_old_data(

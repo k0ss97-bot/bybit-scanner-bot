@@ -182,6 +182,9 @@ class Settings:
     dump_cross_exchange_max_age_seconds: int
     dump_liquidation_min_oi_drop_pct: float
     dump_trend_min_oi_change_pct: float
+    dump_chart_enabled: bool
+    dump_chart_lookback_hours: int
+    dump_chart_interval: str
     dump_min_price_growth_lookback_pct: float
     dump_min_drawdown_from_high_pct: float
     dump_min_price_drop_window_pct: float
@@ -338,6 +341,9 @@ def get_settings() -> Settings:
         dump_cross_exchange_max_age_seconds=_int("DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS", 300),
         dump_liquidation_min_oi_drop_pct=_float("DUMP_LIQUIDATION_MIN_OI_DROP_PCT", 1.5),
         dump_trend_min_oi_change_pct=_float("DUMP_TREND_MIN_OI_CHANGE_PCT", -0.5),
+        dump_chart_enabled=_bool("DUMP_CHART_ENABLED", True),
+        dump_chart_lookback_hours=_int("DUMP_CHART_LOOKBACK_HOURS", 48),
+        dump_chart_interval=os.getenv("DUMP_CHART_INTERVAL", "15m"),
         dump_min_price_growth_lookback_pct=_float("DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 15),
         dump_min_drawdown_from_high_pct=_float("DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 4),
         dump_min_price_drop_window_pct=_float("DUMP_MIN_PRICE_DROP_WINDOW_PCT", 0.5),

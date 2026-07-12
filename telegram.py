@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import uuid
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -40,6 +41,19 @@ class TelegramNotifier:
 
         self._post("sendMessage", payload)
 
+    def send_photo(self, photo: bytes, caption: str = "") -> None:
+        if not self.enabled:
+            print(caption or f"Chart image: {len(photo)} bytes")
+            return
+        self._post_multipart(
+            "sendPhoto",
+            fields={"chat_id": self.chat_id, "caption": caption},
+            file_field="photo",
+            filename="dump-signal.png",
+            content_type="image/png",
+            content=photo,
+        )
+
     def get_updates(self, offset: int | None = None, timeout_seconds: int = 20) -> list[dict]:
         if not self.enabled:
             return []
@@ -64,6 +78,53 @@ class TelegramNotifier:
         try:
             timeout = timeout_seconds if timeout_seconds is not None else self.timeout_seconds
             with urlopen(request, timeout=timeout, context=self.ssl_context) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Telegram error {error.code}: {body}") from error
+
+    def _post_multipart(
+        self,
+        method: str,
+        *,
+        fields: dict[str, str],
+        file_field: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> dict:
+        boundary = f"----scanner-{uuid.uuid4().hex}"
+        chunks: list[bytes] = []
+        for name, value in fields.items():
+            chunks.extend(
+                [
+                    f"--{boundary}\r\n".encode(),
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                    str(value).encode("utf-8"),
+                    b"\r\n",
+                ]
+            )
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                (
+                    f'Content-Disposition: form-data; name="{file_field}"; '
+                    f'filename="{filename}"\r\n'
+                ).encode(),
+                f"Content-Type: {content_type}\r\n\r\n".encode(),
+                content,
+                b"\r\n",
+                f"--{boundary}--\r\n".encode(),
+            ]
+        )
+        request = Request(
+            f"https://api.telegram.org/bot{self.token}/{method}",
+            data=b"".join(chunks),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self.timeout_seconds, context=self.ssl_context) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")

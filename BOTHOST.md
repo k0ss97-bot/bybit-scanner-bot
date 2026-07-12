@@ -65,6 +65,9 @@ DUMP_CROSS_EXCHANGE_REQUIRED=true
 DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS=300
 DUMP_LIQUIDATION_MIN_OI_DROP_PCT=1.5
 DUMP_TREND_MIN_OI_CHANGE_PCT=-0.5
+DUMP_CHART_ENABLED=true
+DUMP_CHART_LOOKBACK_HOURS=48
+DUMP_CHART_INTERVAL=15m
 DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=15
 DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=4
 DUMP_MIN_PRICE_DROP_WINDOW_PCT=0.5
@@ -116,3 +119,5 @@ DUMP_SYMBOL_COOLDOWN_MINUTES=60
 `DUMP_EVALUATION_ENABLED=true` записывает последнюю причину по монетам: прошла ли монета в рабочий top, была ли вне `DUMP_MAX_SYMBOLS`, ушла ли на cooldown или не прошла условия сигнала. Легкий этап проверяет top-100, а дорогие запросы сделок и OI выполняются только для `DUMP_DEEP_MAX_SYMBOLS` кандидатов с нужным разгоном и откатом.
 
 Финальный сигнал формируется по данным Binance и требует свежего подтверждения направления на Bybit. Модель `LIQUIDATION_FLUSH` означает падение цены вместе с OI, модель `SHORT_TREND` — падение цены при стабильном или растущем OI. Результаты отправленных сигналов рассчитываются через 15, 30, 60 и 240 минут.
+
+`DUMP_CHART_ENABLED=true` отправляет после текста сигнала PNG-график со свечами Binance за 48 часов, объемом, локальными OI/CVD и уровнями signal, invalidation, target 1R/2R. Картинка строится только для готового сигнала; ошибка графика не блокирует текстовое сообщение.
