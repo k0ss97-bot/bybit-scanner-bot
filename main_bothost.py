@@ -45,11 +45,13 @@ def safe_send_message(
     notifier: TelegramNotifier,
     text: str,
     reply_markup: dict | None = None,
-) -> None:
+) -> bool:
     try:
         notifier.send_message(text, reply_markup=reply_markup)
+        return True
     except Exception as error:
         print(f"Telegram send failed: {error}", flush=True)
+        return False
 
 
 def request_stop(reason: str) -> None:
@@ -78,7 +80,7 @@ def send_signal_with_symbol_cooldown(
     signal,
     signal_type: str,
     formatter,
-) -> None:
+) -> bool:
     symbol = str(getattr(signal, "symbol", ""))
     now = int(time.time())
     allowed, previous_type, previous_ts = history.claim_telegram_symbol_alert(
@@ -93,9 +95,35 @@ def send_signal_with_symbol_cooldown(
             f"Telegram skip {symbol}: cooldown after {previous_type}, age={age_minutes}m",
             flush=True,
         )
-        return
+        history.release_dump_symbol_alert(
+            symbol=symbol,
+            source=signal_type.removeprefix("dump_").upper(),
+        )
+        return False
 
-    safe_send_message(notifier, formatter(signal))
+    if not safe_send_message(notifier, formatter(signal)):
+        history.release_telegram_symbol_alert(symbol=symbol, ts=now)
+        history.release_dump_symbol_alert(
+            symbol=symbol,
+            source=signal_type.removeprefix("dump_").upper(),
+        )
+        return False
+
+    source_prefix = signal_type.removeprefix("dump_").upper()
+    history.record_signal(
+        signal_type=signal_type,
+        symbol=f"{source_prefix}:{symbol}",
+        ts=now,
+        price=signal.price,
+        open_interest_change_pct=signal.oi_change_pct,
+        futures_cvd_change_pct=0,
+        futures_cvd_delta_usdt=signal.cvd_delta_usdt,
+        spot_cvd_change_pct=0,
+        spot_cvd_delta_usdt=0,
+        price_change_pct=signal.price_change_window_pct,
+        payload=str(signal),
+    )
+    return True
 
 
 def build_notifier(settings) -> TelegramNotifier:
@@ -156,6 +184,7 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "stage": "done",
             "updated_ts": int(time.time()),
             "symbols": result.scanned_symbols,
+            "screened": result.screened_symbols,
             "signals": len(result.signals),
             "watchlist": len(result.watchlist_alerts),
             "failed": result.failed_symbols,
@@ -249,7 +278,8 @@ def format_status_message() -> str:
         lines.append(
             "\n"
             f"{scanner}: обновлено {ago}s назад\n"
-            f"Монет: {data['symbols']}, сигналов: {data['signals']}, "
+            f"Проверено: {data.get('screened', data['symbols'])}, глубоко: {data['symbols']}, "
+            f"сигналов: {data['signals']}, "
             f"почти сигналов: {data['watchlist']}, "
             f"пропущено: {data.get('skipped', 0)}, ошибок: {data['failed']}\n"
             f"Причины отсечения: {data['rejections']}"
@@ -281,7 +311,8 @@ def format_single_status_message(scanner: str) -> str:
     ago = now - int(data.get("updated_ts", now))
     return (
         f"{scanner}: обновлено {ago}s назад\n"
-        f"Монет: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
+        f"Проверено: {data.get('screened', data.get('symbols', 0))}, "
+        f"глубоко: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
         f"почти сигналов: {data.get('watchlist', 0)}, "
         f"пропущено: {data.get('skipped', 0)}, ошибок: {data.get('failed', 0)}\n"
         f"Причины отсечения: {data.get('rejections', 'нет данных')}"
@@ -303,10 +334,16 @@ def format_settings_message(settings) -> str:
         f"DUMP_LOOKBACK_DAYS={settings.dump_lookback_days}\n"
         f"DUMP_MIN_TURNOVER_24H_USDT={settings.dump_min_turnover_24h_usdt:g}\n"
         f"DUMP_MAX_SYMBOLS={settings.dump_max_symbols}\n"
+        f"DUMP_DEEP_MAX_SYMBOLS={settings.dump_deep_max_symbols}\n"
         f"DUMP_REQUIRE_BYBIT_LISTING={str(settings.dump_require_bybit_listing).lower()}\n"
         f"DUMP_BYBIT_SYMBOL_CACHE_MINUTES={settings.dump_bybit_symbol_cache_minutes}\n"
         f"DUMP_EVALUATION_ENABLED={str(settings.dump_evaluation_enabled).lower()}\n"
         f"DUMP_MAX_EVALUATION_SYMBOLS={settings.dump_max_evaluation_symbols}\n"
+        f"DUMP_TRADE_MAX_PAGES={settings.dump_trade_max_pages}\n"
+        f"DUMP_CROSS_EXCHANGE_REQUIRED={str(settings.dump_cross_exchange_required).lower()}\n"
+        f"DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS={settings.dump_cross_exchange_max_age_seconds}\n"
+        f"DUMP_LIQUIDATION_MIN_OI_DROP_PCT={settings.dump_liquidation_min_oi_drop_pct:g}\n"
+        f"DUMP_TREND_MIN_OI_CHANGE_PCT={settings.dump_trend_min_oi_change_pct:g}\n"
         f"DUMP_STRUCTURE_CACHE_MINUTES={settings.dump_structure_cache_minutes}\n"
         f"DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.dump_min_price_growth_lookback_pct:g}\n"
         f"DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.dump_min_drawdown_from_high_pct:g}\n"
@@ -315,8 +352,6 @@ def format_settings_message(settings) -> str:
         f"DUMP_MAX_OI_DROP_WINDOW_PCT={settings.dump_max_oi_drop_window_pct:g}\n"
         f"DUMP_MAX_FUNDING_RATE={settings.dump_max_funding_rate:g}\n"
         f"DUMP_SYMBOL_COOLDOWN_MINUTES={settings.dump_symbol_cooldown_minutes}\n"
-        f"DUMP_ALERT_COOLDOWN_MINUTES={settings.dump_alert_cooldown_minutes}\n"
-        f"DUMP_ALERT_SCORE_IMPROVEMENT={settings.dump_alert_score_improvement}\n"
         f"DUMP_MIN_SIGNAL_SCORE={settings.dump_min_signal_score}\n"
         f"DUMP_WATCHLIST_MIN_SCORE={settings.dump_watchlist_min_score}\n\n"
         "Фильтры:\n"
@@ -356,7 +391,7 @@ def format_stats_message(history: HistoryStore) -> str:
                 f"просадка={avg_max_adverse_pct:+.2f}%"
             )
     else:
-        lines.append("Пока нет рассчитанных результатов. Нужно дождаться 1ч/4ч/24ч после сигналов.")
+        lines.append("Пока нет рассчитанных результатов. Нужно дождаться 15/30/60/240 минут после сигналов.")
 
     lines.append("\nПоследние сигналы:")
     if not recent:
@@ -723,7 +758,8 @@ def run_dump_loop(source: str) -> None:
             maybe_send_rate_warning(scanner_name, result.failed_symbols, notifier)
             print(
                 f"{scanner_name} scan done: "
-                f"symbols={result.scanned_symbols}, "
+                f"screened={result.screened_symbols}, "
+                f"deep={result.scanned_symbols}, "
                 f"signals={len(result.signals)}, "
                 f"failed={result.failed_symbols}, "
                 f"reviews={reviewed}, "

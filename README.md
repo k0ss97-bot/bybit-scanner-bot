@@ -53,8 +53,7 @@ DUMP_ENABLED=true
 Telegram-сообщения:
 
 ```text
-🔻 DUMP TREND | BYBIT
-🔻 DUMP TREND | BINANCE
+🔻 DUMP TREND | BINANCE + BYBIT
 ```
 
 ## Антиспам
@@ -62,14 +61,15 @@ Telegram-сообщения:
 ```text
 TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240
 DUMP_SYMBOL_COOLDOWN_MINUTES=60
-DUMP_ALERT_COOLDOWN_MINUTES=45
 ```
 
 `TELEGRAM_SYMBOL_COOLDOWN_MINUTES=240` не дает одной монете спамить в Telegram чаще 1 раза за 4 часа.
 
-`DUMP_SYMBOL_COOLDOWN_MINUTES=60` защищает от дубля между Binance и Bybit по одной монете.
+`DUMP_SYMBOL_COOLDOWN_MINUTES=60` защищает внутренний цикл от повторной подготовки одного сигнала, а Telegram-лимит остаётся главным антиспамом на 4 часа.
 
 `DUMP_EVALUATION_ENABLED=true` сохраняет последнюю причину по монете: была ли она вне `DUMP_MAX_SYMBOLS`, не торгуется ли на Bybit, ушла ли на cooldown или не прошла условия.
+
+Активный DUMP-сканер использует двухэтапный отбор: top-100 проходит легкую проверку структуры, после чего до 30 кандидатов получают глубокий анализ сделок, CVD и OI. Сигнал отправляется только при совпадении направления Binance и Bybit и помечается как `LIQUIDATION_FLUSH` или `SHORT_TREND`. Статистика результата считается через 15, 30, 60 и 240 минут только для реально отправленных Telegram-сигналов.
 
 ## Telegram-команды
 

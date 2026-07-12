@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
 
-from bybit_client import Kline, Trade
+from bybit_client import Kline, Trade, TradeBatch
 from liquidity import OrderbookLevel, OrderbookLiquidity, calculate_orderbook_liquidity
 
 
@@ -66,7 +66,47 @@ class BinanceClient:
         return _to_float(data.get("openInterest"))
 
     def get_recent_trades(self, symbol: str, limit: int = 1000) -> list[Trade]:
-        data = self._get("/fapi/v1/aggTrades", {"symbol": symbol, "limit": limit})
+        return self._parse_trades(
+            symbol,
+            self._get("/fapi/v1/aggTrades", {"symbol": symbol, "limit": limit}),
+        )
+
+    def get_trades_since(
+        self,
+        symbol: str,
+        last_trade_id: str = "",
+        last_time_ms: int = 0,
+        limit: int = 1000,
+        max_pages: int = 5,
+    ) -> TradeBatch:
+        if not last_trade_id:
+            return TradeBatch(self.get_recent_trades(symbol, limit=limit), True)
+
+        try:
+            next_id = int(last_trade_id) + 1
+        except ValueError:
+            return TradeBatch(self.get_recent_trades(symbol, limit=limit), False)
+
+        trades: list[Trade] = []
+        complete = True
+        pages = max(1, max_pages)
+        for page_index in range(pages):
+            data = self._get(
+                "/fapi/v1/aggTrades",
+                {"symbol": symbol, "fromId": next_id, "limit": limit},
+            )
+            page = self._parse_trades(symbol, data)
+            if not page:
+                break
+            trades.extend(page)
+            next_id = int(page[-1].exec_id) + 1
+            if len(page) < limit:
+                break
+            if page_index == pages - 1:
+                complete = False
+        return TradeBatch(trades=trades, complete=complete)
+
+    def _parse_trades(self, symbol: str, data: list[dict[str, Any]]) -> list[Trade]:
         trades = []
         for item in data:
             is_buyer_maker = bool(item.get("m"))

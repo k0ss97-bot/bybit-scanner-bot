@@ -55,10 +55,16 @@ DUMP_LOOKBACK_DAYS=2
 DUMP_STRUCTURE_CACHE_MINUTES=30
 DUMP_MIN_TURNOVER_24H_USDT=2000000
 DUMP_MAX_SYMBOLS=100
+DUMP_DEEP_MAX_SYMBOLS=30
 DUMP_REQUIRE_BYBIT_LISTING=true
 DUMP_BYBIT_SYMBOL_CACHE_MINUTES=15
 DUMP_EVALUATION_ENABLED=true
 DUMP_MAX_EVALUATION_SYMBOLS=120
+DUMP_TRADE_MAX_PAGES=5
+DUMP_CROSS_EXCHANGE_REQUIRED=true
+DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS=300
+DUMP_LIQUIDATION_MIN_OI_DROP_PCT=1.5
+DUMP_TREND_MIN_OI_CHANGE_PCT=-0.5
 DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=15
 DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=4
 DUMP_MIN_PRICE_DROP_WINDOW_PCT=0.5
@@ -69,8 +75,6 @@ DUMP_MIN_SIGNAL_SCORE=5
 DUMP_WATCHLIST_MIN_SCORE=4
 DUMP_CONSECUTIVE_CHECKS=1
 DUMP_SYMBOL_COOLDOWN_MINUTES=60
-DUMP_ALERT_COOLDOWN_MINUTES=45
-DUMP_ALERT_SCORE_IMPROVEMENT=2
 ```
 
 ## Telegram-кнопки
@@ -102,12 +106,13 @@ DUMP_ALERT_SCORE_IMPROVEMENT=2
 Сообщение в Telegram начинается так:
 
 ```text
-🔻 DUMP TREND | BYBIT
-🔻 DUMP TREND | BINANCE
+🔻 DUMP TREND | BINANCE + BYBIT
 ```
 
 `DUMP_SYMBOL_COOLDOWN_MINUTES` защищает от дублей между биржами: если монета уже пришла с Binance, Bybit не отправит такой же dump-сигнал по этой монете до конца cooldown, и наоборот.
 
 `DUMP_REQUIRE_BYBIT_LISTING=true` оставляет Binance-данные только для монет, которые есть на Bybit linear USDT. Если монеты нет на Bybit, бот не покажет по ней сигнал.
 
-`DUMP_EVALUATION_ENABLED=true` записывает последнюю причину по монетам: прошла ли монета в рабочий top, была ли вне `DUMP_MAX_SYMBOLS`, ушла ли на cooldown или не прошла условия сигнала.
+`DUMP_EVALUATION_ENABLED=true` записывает последнюю причину по монетам: прошла ли монета в рабочий top, была ли вне `DUMP_MAX_SYMBOLS`, ушла ли на cooldown или не прошла условия сигнала. Легкий этап проверяет top-100, а дорогие запросы сделок и OI выполняются только для `DUMP_DEEP_MAX_SYMBOLS` кандидатов с нужным разгоном и откатом.
+
+Финальный сигнал формируется по данным Binance и требует свежего подтверждения направления на Bybit. Модель `LIQUIDATION_FLUSH` означает падение цены вместе с OI, модель `SHORT_TREND` — падение цены при стабильном или растущем OI. Результаты отправленных сигналов рассчитываются через 15, 30, 60 и 240 минут.

@@ -17,6 +17,7 @@ class Snapshot:
     spot_cvd: float = 0.0
     new_trades: int = 0
     new_spot_trades: int = 0
+    cvd_generation: int = 0
 
 
 @dataclass
@@ -30,6 +31,9 @@ class SymbolState:
     last_alert_score: int = 0
     last_watchlist_ts: int = 0
     consecutive_matches: int = 0
+    last_trade_id: str = ""
+    last_trade_time_ms: int = 0
+    cvd_generation: int = 0
 
 
 class StateStore:
@@ -61,6 +65,9 @@ class StateStore:
                 last_alert_score=int(data.get("last_alert_score", 0)),
                 last_watchlist_ts=int(data.get("last_watchlist_ts", 0)),
                 consecutive_matches=int(data.get("consecutive_matches", 0)),
+                last_trade_id=str(data.get("last_trade_id", "")),
+                last_trade_time_ms=int(data.get("last_trade_time_ms", 0)),
+                cvd_generation=int(data.get("cvd_generation", 0)),
             )
 
     def save(self) -> None:

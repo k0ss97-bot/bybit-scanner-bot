@@ -172,10 +172,16 @@ class Settings:
     dump_structure_cache_minutes: int
     dump_min_turnover_24h_usdt: float
     dump_max_symbols: int
+    dump_deep_max_symbols: int
     dump_require_bybit_listing: bool
     dump_bybit_symbol_cache_minutes: int
     dump_evaluation_enabled: bool
     dump_max_evaluation_symbols: int
+    dump_trade_max_pages: int
+    dump_cross_exchange_required: bool
+    dump_cross_exchange_max_age_seconds: int
+    dump_liquidation_min_oi_drop_pct: float
+    dump_trend_min_oi_change_pct: float
     dump_min_price_growth_lookback_pct: float
     dump_min_drawdown_from_high_pct: float
     dump_min_price_drop_window_pct: float
@@ -185,8 +191,6 @@ class Settings:
     dump_min_signal_score: int
     dump_watchlist_min_score: int
     dump_consecutive_checks: int
-    dump_alert_cooldown_minutes: int
-    dump_alert_score_improvement: int
     dump_symbol_cooldown_minutes: int
     startup_notifications: bool
 
@@ -324,10 +328,16 @@ def get_settings() -> Settings:
         dump_structure_cache_minutes=_int("DUMP_STRUCTURE_CACHE_MINUTES", 30),
         dump_min_turnover_24h_usdt=_float("DUMP_MIN_TURNOVER_24H_USDT", 2000000),
         dump_max_symbols=_int("DUMP_MAX_SYMBOLS", 100),
+        dump_deep_max_symbols=_int("DUMP_DEEP_MAX_SYMBOLS", 30),
         dump_require_bybit_listing=_bool("DUMP_REQUIRE_BYBIT_LISTING", True),
         dump_bybit_symbol_cache_minutes=_int("DUMP_BYBIT_SYMBOL_CACHE_MINUTES", 15),
         dump_evaluation_enabled=_bool("DUMP_EVALUATION_ENABLED", True),
         dump_max_evaluation_symbols=_int("DUMP_MAX_EVALUATION_SYMBOLS", 120),
+        dump_trade_max_pages=_int("DUMP_TRADE_MAX_PAGES", 5),
+        dump_cross_exchange_required=_bool("DUMP_CROSS_EXCHANGE_REQUIRED", True),
+        dump_cross_exchange_max_age_seconds=_int("DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS", 300),
+        dump_liquidation_min_oi_drop_pct=_float("DUMP_LIQUIDATION_MIN_OI_DROP_PCT", 1.5),
+        dump_trend_min_oi_change_pct=_float("DUMP_TREND_MIN_OI_CHANGE_PCT", -0.5),
         dump_min_price_growth_lookback_pct=_float("DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 15),
         dump_min_drawdown_from_high_pct=_float("DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 4),
         dump_min_price_drop_window_pct=_float("DUMP_MIN_PRICE_DROP_WINDOW_PCT", 0.5),
@@ -337,8 +347,6 @@ def get_settings() -> Settings:
         dump_min_signal_score=_int("DUMP_MIN_SIGNAL_SCORE", 5),
         dump_watchlist_min_score=_int("DUMP_WATCHLIST_MIN_SCORE", 4),
         dump_consecutive_checks=_int("DUMP_CONSECUTIVE_CHECKS", 1),
-        dump_alert_cooldown_minutes=_int("DUMP_ALERT_COOLDOWN_MINUTES", 45),
-        dump_alert_score_improvement=_int("DUMP_ALERT_SCORE_IMPROVEMENT", 2),
         dump_symbol_cooldown_minutes=_int("DUMP_SYMBOL_COOLDOWN_MINUTES", 60),
         startup_notifications=_bool("STARTUP_NOTIFICATIONS", False),
     )

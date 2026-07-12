@@ -42,6 +42,12 @@ class Trade:
 
 
 @dataclass(frozen=True)
+class TradeBatch:
+    trades: list[Trade]
+    complete: bool
+
+
+@dataclass(frozen=True)
 class Kline:
     start_ms: int
     open_price: float
@@ -117,6 +123,41 @@ class BybitClient:
                 )
             )
         return trades
+
+    def get_trades_since(
+        self,
+        symbol: str,
+        last_trade_id: str = "",
+        last_time_ms: int = 0,
+        limit: int = 1000,
+        max_pages: int = 1,
+    ) -> TradeBatch:
+        trades = sorted(
+            self.get_recent_trades(symbol, limit=limit),
+            key=lambda trade: (trade.time_ms, trade.exec_id),
+        )
+        if not trades or not last_trade_id:
+            return TradeBatch(trades=trades, complete=True)
+
+        matching_index = next(
+            (index for index, trade in enumerate(trades) if trade.exec_id == last_trade_id),
+            None,
+        )
+        if matching_index is not None:
+            return TradeBatch(
+                trades=trades[matching_index + 1 :],
+                complete=True,
+            )
+
+        newest_time = trades[-1].time_ms
+        oldest_time = trades[0].time_ms
+        if newest_time <= last_time_ms:
+            return TradeBatch(trades=[], complete=True)
+        complete = oldest_time <= last_time_ms
+        return TradeBatch(
+            trades=[trade for trade in trades if trade.time_ms > last_time_ms],
+            complete=complete,
+        )
 
     def get_daily_klines(self, symbol: str, limit: int = 5) -> list[Kline]:
         return self.get_klines(symbol, interval="D", limit=limit)

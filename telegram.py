@@ -71,14 +71,35 @@ class TelegramNotifier:
 
 
 def format_dump_signal(signal: DumpSignal) -> str:
-    source = signal.source.upper()
     bybit_chart_url = f"https://www.bybit.com/trade/usdt/{signal.symbol}"
     data_chart_url = f"https://www.binance.com/en/futures/{signal.symbol}"
     data_chart_line = (
-        f"График данных Binance: {data_chart_url}\n" if source == "BINANCE" else ""
+        f"График данных Binance: {data_chart_url}\n"
+        if "BINANCE" in signal.source.upper()
+        else ""
     )
+    mode_title = {
+        "LIQUIDATION_FLUSH": "Ликвидационный слив",
+        "SHORT_TREND": "Продолжение шорт-тренда",
+    }.get(signal.mode, signal.mode)
+    reason = (
+        "Цена и OI падают одновременно: закрываются или ликвидируются лонги, "
+        "а поток futures-сделок подтверждает продажи."
+        if signal.mode == "LIQUIDATION_FLUSH"
+        else "Цена падает при стабильном или растущем OI: продавцы продолжают "
+        "набирать шорты, а futures CVD подтверждает направление."
+    )
+    confirmation_block = ""
+    if signal.confirmation_source:
+        confirmation_block = (
+            f"Подтверждение {signal.confirmation_source}:\n"
+            f"Price: {signal.confirmation_price_change_pct:+.2f}%\n"
+            f"OI: {signal.confirmation_oi_change_pct:+.2f}%\n"
+            f"CVD delta: {signal.confirmation_cvd_delta_usdt:,.0f} USDT\n\n"
+        )
     return (
-        f"🔻 DUMP TREND | {source}\n\n"
+        f"🔻 DUMP TREND | {signal.source.replace('+', ' + ')}\n"
+        f"Модель: {mode_title}\n\n"
         f"Монета: {signal.symbol}\n"
         f"График Bybit: {bybit_chart_url}\n"
         f"{data_chart_line}"
@@ -95,7 +116,6 @@ def format_dump_signal(signal: DumpSignal) -> str:
         f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
         f"New futures trades: {signal.new_trades}\n"
         f"Confirmations: {signal.consecutive_matches}\n\n"
-        "Причина: после разгона монета начала откатываться от high, цена падает "
-        "в коротком окне, а поток futures-сделок идет в продажу. Это модель входа "
-        "в тренд слива."
+        f"{confirmation_block}"
+        f"Причина: {reason}"
     )

@@ -5,7 +5,7 @@ import sqlite3
 import time
 
 
-REVIEW_SCHEMA_VERSION = "scanner-filtered-v2"
+REVIEW_SCHEMA_VERSION = "scanner-filtered-v3-15-30-60-240"
 
 
 class HistoryStore:
@@ -95,6 +95,22 @@ class HistoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_signal_reviews_signal_id
                 ON signal_reviews(signal_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS signal_price_snapshots (
+                    signal_id INTEGER NOT NULL,
+                    ts INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    UNIQUE(signal_id, ts)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_signal_price_snapshots_signal_ts
+                ON signal_price_snapshots(signal_id, ts)
                 """
             )
             conn.execute(
@@ -239,6 +255,11 @@ class HistoryStore:
                     (snapshot_cutoff,),
                 )
                 deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+                cursor = conn.execute(
+                    "DELETE FROM signal_price_snapshots WHERE ts < ?",
+                    (snapshot_cutoff,),
+                )
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
             if watchlist_retention_days > 0:
                 watchlist_cutoff = now - watchlist_retention_days * 24 * 60 * 60
                 cursor = conn.execute(
@@ -308,10 +329,10 @@ class HistoryStore:
         price_change_pct: float,
         payload: str,
         ts: int | None = None,
-    ) -> None:
+    ) -> int:
         ts = ts or int(time.time())
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO signals (
                     signal_type, symbol, ts, price, open_interest_change_pct,
@@ -335,6 +356,52 @@ class HistoryStore:
                     payload,
                 ),
             )
+            signal_id = int(cursor.lastrowid)
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO signal_price_snapshots (signal_id, ts, price)
+                VALUES (?, ?, ?)
+                """,
+                (signal_id, ts, price),
+            )
+            return signal_id
+
+    def record_pending_signal_prices(
+        self,
+        *,
+        signal_type: str,
+        prices: dict[str, float],
+        ts: int,
+        max_horizon_minutes: int = 240,
+    ) -> int:
+        if not prices:
+            return 0
+        cutoff = ts - max_horizon_minutes * 60
+        inserted = 0
+        with self._connect() as conn:
+            signals = conn.execute(
+                """
+                SELECT id, symbol
+                FROM signals
+                WHERE signal_type = ? AND ts >= ?
+                """,
+                (signal_type, cutoff),
+            ).fetchall()
+            for signal_id, stored_symbol in signals:
+                bare_symbol = str(stored_symbol).split(":", 1)[-1]
+                price = prices.get(bare_symbol)
+                if price is None or price <= 0:
+                    continue
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO signal_price_snapshots (signal_id, ts, price)
+                    VALUES (?, ?, ?)
+                    """,
+                    (signal_id, ts, price),
+                )
+                if cursor.rowcount == 1:
+                    inserted += 1
+        return inserted
 
     def claim_dump_symbol_alert(
         self,
@@ -377,6 +444,13 @@ class HistoryStore:
             )
             return True, None, None, None
 
+    def release_dump_symbol_alert(self, *, symbol: str, source: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM dump_symbol_cooldowns WHERE symbol = ? AND source = ?",
+                (symbol, source),
+            )
+
     def claim_telegram_symbol_alert(
         self,
         *,
@@ -416,11 +490,18 @@ class HistoryStore:
             )
             return True, None, None
 
+    def release_telegram_symbol_alert(self, *, symbol: str, ts: int) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM telegram_symbol_cooldowns WHERE symbol = ? AND ts = ?",
+                (symbol, ts),
+            )
+
     def update_signal_reviews(
         self,
         *,
         now: int | None = None,
-        horizons_minutes: tuple[int, ...] = (60, 240, 1440),
+        horizons_minutes: tuple[int, ...] = (15, 30, 60, 240),
     ) -> int:
         now = now or int(time.time())
         reviewed = 0
@@ -458,12 +539,22 @@ class HistoryStore:
                     snapshots = conn.execute(
                         """
                         SELECT ts, price
+                        FROM signal_price_snapshots
+                        WHERE signal_id = ? AND ts >= ? AND ts <= ?
+                        ORDER BY ts ASC
+                        """,
+                        (signal_id, signal_ts, target_ts),
+                    ).fetchall()
+                    if not snapshots:
+                        snapshots = conn.execute(
+                        """
+                        SELECT ts, price
                         FROM market_snapshots
                         WHERE scanner = ? AND symbol = ? AND ts >= ? AND ts <= ?
                         ORDER BY ts ASC
                         """,
                         (scanner, symbol, signal_ts, target_ts),
-                    ).fetchall()
+                        ).fetchall()
                     if not snapshots:
                         continue
 

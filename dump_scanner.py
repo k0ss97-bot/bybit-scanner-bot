@@ -15,6 +15,10 @@ from state import Snapshot, StateStore, SymbolState
 
 SYMBOL_ALERT_LOCK = threading.Lock()
 SYMBOL_ALERTS: dict[str, tuple[int, str, int]] = {}
+MARKET_EVIDENCE_LOCK = threading.Lock()
+MARKET_EVIDENCE: dict[tuple[str, str], "MarketEvidence"] = {}
+DEEP_CANDIDATES_LOCK = threading.Lock()
+BINANCE_DEEP_CANDIDATES: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,8 @@ class DumpStructureCacheEntry:
 @dataclass(frozen=True)
 class DumpSignal:
     source: str
+    mode: str
+    confirmation_source: str
     symbol: str
     window_minutes: int
     lookback_days: int
@@ -42,6 +48,21 @@ class DumpSignal:
     turnover_24h: float
     new_trades: int
     consecutive_matches: int
+    confirmation_price_change_pct: float
+    confirmation_oi_change_pct: float
+    confirmation_cvd_delta_usdt: float
+
+
+@dataclass(frozen=True)
+class MarketEvidence:
+    source: str
+    symbol: str
+    ts: int
+    mode: str
+    price_change_pct: float
+    oi_change_pct: float
+    cvd_delta_usdt: float
+    cvd_complete: bool
 
 
 @dataclass(frozen=True)
@@ -66,6 +87,7 @@ class DumpScanResult:
     signals: list[DumpSignal]
     watchlist_alerts: list[DumpWatchlistAlert]
     scanned_symbols: int
+    screened_symbols: int
     failed_symbols: int
     skipped_symbols: int
     rejection_reasons: dict[str, int]
@@ -92,7 +114,8 @@ class DumpScanner:
     def scan_once(self, progress_callback=None) -> DumpScanResult:
         now = int(time.time())
         rejection_reasons: dict[str, int] = {}
-        tickers = self._select_tickers(now, rejection_reasons)
+        screened_tickers = self._select_tickers(now, rejection_reasons)
+        tickers = self._select_deep_candidates(now, screened_tickers, rejection_reasons)
         if progress_callback is not None:
             progress_callback(0, len(tickers))
 
@@ -105,7 +128,7 @@ class DumpScanner:
             try:
                 state = self.store.get_symbol(ticker.symbol)
                 open_interest = self._get_open_interest(ticker)
-                new_trades = self._update_cvd(ticker.symbol, state)
+                new_trades, cvd_complete = self._update_cvd(ticker.symbol, state)
                 self._add_snapshot(now, ticker, open_interest, state, new_trades)
 
                 signal, watchlist_alert = self._build_signal(
@@ -114,25 +137,11 @@ class DumpScanner:
                     state,
                     rejection_reasons,
                     source_rank,
+                    cvd_complete,
                 )
                 if signal is not None:
-                    state.last_alert_ts = now
-                    state.last_alert_score = signal.signal_score
-                    if self.history is not None:
-                        self.history.record_signal(
-                            signal_type=f"dump_{self.source.lower()}",
-                            symbol=self._history_symbol(signal.symbol),
-                            ts=now,
-                            price=signal.price,
-                            open_interest_change_pct=signal.oi_change_pct,
-                            futures_cvd_change_pct=0,
-                            futures_cvd_delta_usdt=signal.cvd_delta_usdt,
-                            spot_cvd_change_pct=0,
-                            spot_cvd_delta_usdt=0,
-                            price_change_pct=signal.price_change_window_pct,
-                            payload=str(signal),
-                        )
                     signals.append(signal)
+                    state.consecutive_matches = 0
                 elif watchlist_alert is not None:
                     if self.history is not None:
                         self.history.record_watchlist_candidate(
@@ -164,10 +173,66 @@ class DumpScanner:
             signals=signals,
             watchlist_alerts=watchlist_alerts,
             scanned_symbols=len(tickers),
+            screened_symbols=len(screened_tickers),
             failed_symbols=failed_symbols,
             skipped_symbols=skipped_symbols,
             rejection_reasons=rejection_reasons,
         )
+
+    def _select_deep_candidates(
+        self,
+        now: int,
+        tickers: list[tuple[int, Any]],
+        rejection_reasons: dict[str, int],
+    ) -> list[tuple[int, Any]]:
+        eligible: list[tuple[int, Any]] = []
+        for source_rank, ticker in tickers:
+            try:
+                structure = self._get_dump_structure(ticker.symbol, ticker.price)
+            except Exception as error:
+                if self._is_symbol_unavailable_error(error):
+                    count_reason(rejection_reasons, "symbol_unavailable")
+                else:
+                    count_reason(rejection_reasons, "prefilter_failed")
+                continue
+            if structure is None:
+                count_reason(rejection_reasons, "no_dump_structure")
+                continue
+            growth, drawdown, _ = structure
+            if growth < self.settings.dump_min_price_growth_lookback_pct:
+                count_reason(rejection_reasons, "prefilter_prior_pump")
+                continue
+            if drawdown > -self.settings.dump_min_drawdown_from_high_pct:
+                count_reason(rejection_reasons, "prefilter_drawdown")
+                continue
+            eligible.append((source_rank, ticker))
+
+        if self.source == "BYBIT":
+            with DEEP_CANDIDATES_LOCK:
+                primary_symbols = set(BINANCE_DEEP_CANDIDATES)
+            primary = [item for item in eligible if item[1].symbol in primary_symbols]
+            remaining = [item for item in eligible if item[1].symbol not in primary_symbols]
+            selected = (primary + remaining)[: self.settings.dump_deep_max_symbols]
+        else:
+            selected = eligible[: self.settings.dump_deep_max_symbols]
+            with DEEP_CANDIDATES_LOCK:
+                BINANCE_DEEP_CANDIDATES.clear()
+                BINANCE_DEEP_CANDIDATES.update(ticker.symbol for _, ticker in selected)
+
+        selected_symbols = {ticker.symbol for _, ticker in selected}
+        for source_rank, ticker in eligible:
+            if ticker.symbol in selected_symbols:
+                continue
+            count_reason(rejection_reasons, "outside_deep_shortlist")
+            self._record_selection_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="outside_deep_shortlist",
+                reason=f"outside_deep_{self.settings.dump_deep_max_symbols}",
+                missing_checks=[f"deep_top_{self.settings.dump_deep_max_symbols}"],
+            )
+        return selected
 
     def _select_tickers(
         self,
@@ -224,6 +289,12 @@ class DumpScanner:
         rejection_reasons: dict[str, int],
     ) -> list[tuple[int, Any]]:
         selected = ranked_tickers[: self.settings.dump_max_symbols]
+        if self.history is not None:
+            self.history.record_pending_signal_prices(
+                signal_type=f"dump_{self.source.lower()}",
+                prices={ticker.symbol: ticker.price for _, ticker in ranked_tickers},
+                ts=now,
+            )
         outside = ranked_tickers[self.settings.dump_max_symbols :]
         if outside:
             rejection_reasons["outside_top_symbols"] = (
@@ -330,15 +401,26 @@ class DumpScanner:
             return self.client.get_open_interest(ticker.symbol)
         return float(ticker.open_interest)
 
-    def _update_cvd(self, symbol: str, state: SymbolState) -> int:
-        trades = self.client.get_recent_trades(symbol, limit=1000)
-        seen = set(state.seen_trade_ids)
-        new_trades = [trade for trade in trades if trade.exec_id not in seen]
+    def _update_cvd(self, symbol: str, state: SymbolState) -> tuple[int, bool]:
+        migrating_legacy_state = not state.last_trade_id and bool(state.snapshots)
+        batch = self.client.get_trades_since(
+            symbol,
+            last_trade_id=state.last_trade_id,
+            last_time_ms=state.last_trade_time_ms,
+            limit=1000,
+            max_pages=self.settings.dump_trade_max_pages,
+        )
+        new_trades = batch.trades
+        if migrating_legacy_state or not batch.complete:
+            state.cumulative_cvd = 0.0
+            state.cvd_generation += 1
         for trade in new_trades:
             state.cumulative_cvd += trade.signed_notional
-        recent_ids = [trade.exec_id for trade in new_trades] + state.seen_trade_ids
-        state.seen_trade_ids = recent_ids[:3000]
-        return len(new_trades)
+        if new_trades:
+            latest = max(new_trades, key=lambda trade: (trade.time_ms, trade.exec_id))
+            state.last_trade_id = latest.exec_id
+            state.last_trade_time_ms = latest.time_ms
+        return len(new_trades), batch.complete
 
     def _add_snapshot(
         self,
@@ -357,6 +439,7 @@ class DumpScanner:
                 funding=ticker.funding_rate,
                 turnover_24h=self._turnover(ticker),
                 new_trades=new_trades,
+                cvd_generation=state.cvd_generation,
             )
         )
         if self.history is not None:
@@ -383,6 +466,7 @@ class DumpScanner:
         state: SymbolState,
         rejection_reasons: dict[str, int],
         source_rank: int,
+        cvd_complete: bool,
     ) -> tuple[DumpSignal | None, DumpWatchlistAlert | None]:
         current = state.snapshots[-1]
         previous = self._find_window_snapshot(current.ts, state)
@@ -422,6 +506,19 @@ class DumpScanner:
         cvd_delta = current.cvd - previous.cvd
         price_change_window_pct = pct_change(previous.price, current.price)
         turnover_24h = self._turnover(ticker)
+        mode = self._signal_mode(oi_change_pct)
+        evidence = MarketEvidence(
+            source=self.source,
+            symbol=ticker.symbol,
+            ts=now,
+            mode=mode,
+            price_change_pct=price_change_window_pct,
+            oi_change_pct=oi_change_pct,
+            cvd_delta_usdt=cvd_delta,
+            cvd_complete=cvd_complete,
+        )
+        partner = self._publish_and_get_partner(evidence)
+        cross_exchange_ok = self._cross_exchange_ok(evidence, partner)
 
         checks = {
             "volume": turnover_24h >= self.settings.dump_min_turnover_24h_usdt,
@@ -431,6 +528,9 @@ class DumpScanner:
             <= -self.settings.dump_min_drawdown_from_high_pct,
             "price_dropping": price_change_window_pct <= -self.settings.dump_min_price_drop_window_pct,
             "sell_cvd": cvd_delta <= -self.settings.dump_min_negative_cvd_delta_usdt,
+            "cvd_complete": cvd_complete,
+            "dump_mode": mode != "UNCONFIRMED_OI",
+            "cross_exchange": cross_exchange_ok,
         }
         soft_checks = {
             "oi_not_collapsed": oi_change_pct >= -self.settings.dump_max_oi_drop_window_pct,
@@ -446,6 +546,7 @@ class DumpScanner:
         )
 
         if not all(checks.values()) or signal_score < self.settings.dump_min_signal_score:
+            state.consecutive_matches = 0
             for reason, passed in checks.items():
                 if not passed:
                     count_reason(rejection_reasons, reason)
@@ -485,30 +586,6 @@ class DumpScanner:
                 missing_checks=missing_checks,
             )
             return None, watchlist_alert
-
-        if (
-            now - state.last_alert_ts < self.settings.dump_alert_cooldown_minutes * 60
-            and signal_score < state.last_alert_score + self.settings.dump_alert_score_improvement
-        ):
-            count_reason(rejection_reasons, "cooldown")
-            self._record_signal_evaluation(
-                now=now,
-                ticker=ticker,
-                source_rank=source_rank,
-                status="cooldown",
-                reason="alert_cooldown",
-                score=signal_score,
-                turnover_24h=turnover_24h,
-                price_growth_lookback_pct=price_growth_lookback_pct,
-                drawdown_from_high_pct=drawdown_from_high_pct,
-                oi_change_pct=oi_change_pct,
-                cvd_delta_usdt=cvd_delta,
-                price_change_window_pct=price_change_window_pct,
-                funding_rate=current.funding,
-                passed_checks=[name for name, passed in {**checks, **soft_checks}.items() if passed],
-                missing_checks=["alert_cooldown"],
-            )
-            return None, None
 
         state.consecutive_matches += 1
         if state.consecutive_matches < self.settings.dump_consecutive_checks:
@@ -552,7 +629,9 @@ class DumpScanner:
             return None, None
 
         signal = DumpSignal(
-            source=self.source,
+            source="BINANCE+BYBIT" if partner is not None else self.source,
+            mode=mode,
+            confirmation_source=partner.source if partner is not None else "",
             symbol=ticker.symbol,
             window_minutes=self.settings.dump_window_minutes,
             lookback_days=self.settings.dump_lookback_days,
@@ -568,6 +647,9 @@ class DumpScanner:
             turnover_24h=turnover_24h,
             new_trades=current.new_trades,
             consecutive_matches=state.consecutive_matches,
+            confirmation_price_change_pct=partner.price_change_pct if partner is not None else 0.0,
+            confirmation_oi_change_pct=partner.oi_change_pct if partner is not None else 0.0,
+            confirmation_cvd_delta_usdt=partner.cvd_delta_usdt if partner is not None else 0.0,
         )
         self._record_signal_evaluation(
             now=now,
@@ -697,10 +779,48 @@ class DumpScanner:
 
     def _find_window_snapshot(self, now: int, state: SymbolState) -> Snapshot | None:
         target = now - self.settings.dump_window_minutes * 60
-        candidates = [snapshot for snapshot in state.snapshots if snapshot.ts <= target]
+        candidates = [
+            snapshot
+            for snapshot in state.snapshots
+            if snapshot.ts <= target and snapshot.cvd_generation == state.cvd_generation
+        ]
         if not candidates:
             return None
         return candidates[-1]
+
+    def _signal_mode(self, oi_change_pct: float) -> str:
+        if oi_change_pct <= -self.settings.dump_liquidation_min_oi_drop_pct:
+            return "LIQUIDATION_FLUSH"
+        if oi_change_pct >= self.settings.dump_trend_min_oi_change_pct:
+            return "SHORT_TREND"
+        return "UNCONFIRMED_OI"
+
+    def _publish_and_get_partner(self, evidence: MarketEvidence) -> MarketEvidence | None:
+        with MARKET_EVIDENCE_LOCK:
+            MARKET_EVIDENCE[(evidence.source, evidence.symbol)] = evidence
+            partner_source = "BYBIT" if evidence.source == "BINANCE" else "BINANCE"
+            return MARKET_EVIDENCE.get((partner_source, evidence.symbol))
+
+    def _cross_exchange_ok(
+        self,
+        evidence: MarketEvidence,
+        partner: MarketEvidence | None,
+    ) -> bool:
+        if not self.settings.dump_cross_exchange_required:
+            return True
+        # Binance is the primary market-data source; Bybit confirms tradability and direction.
+        if evidence.source != "BINANCE" or partner is None or partner.source != "BYBIT":
+            return False
+        if abs(evidence.ts - partner.ts) > self.settings.dump_cross_exchange_max_age_seconds:
+            return False
+        if evidence.mode == "UNCONFIRMED_OI":
+            return False
+        if not evidence.cvd_complete or not partner.cvd_complete:
+            return False
+        return (
+            partner.price_change_pct <= -self.settings.dump_min_price_drop_window_pct
+            and partner.cvd_delta_usdt < 0
+        )
 
     def _turnover(self, ticker: Ticker | BinanceTicker) -> float:
         return getattr(ticker, "turnover_24h", 0) or getattr(ticker, "quote_volume_24h", 0)
