@@ -36,6 +36,7 @@ def menu_keyboard() -> dict:
             [{"text": "📈 Статистика"}, {"text": "❓ Почему нет сигналов"}],
             [{"text": "🎯 Ближайшие"}, {"text": "🕘 Последние сигналы"}],
             [{"text": "🔻 DUMP BYBIT"}, {"text": "🔻 DUMP BINANCE"}],
+            [{"text": "🤖 Тест OpenAI"}],
             [{"text": "⏸ Пауза"}, {"text": "▶️ Старт"}],
         ],
         "resize_keyboard": True,
@@ -718,6 +719,53 @@ def is_menu_request(text: str) -> bool:
     return text.startswith("/start") or text in {"меню", "/menu", "кнопки"}
 
 
+def is_openai_test_request(text: str) -> bool:
+    return text.startswith("/ai_test") or text in {
+        "тест openai",
+        "🤖 тест openai",
+        "проверить openai",
+    }
+
+
+def run_openai_test(
+    notifier: TelegramNotifier,
+    analyzer: OpenAISignalAnalyzer,
+) -> None:
+    try:
+        response_text, web_search_used = analyzer.test_connection()
+        search_status = "OK" if web_search_used else "не подтвержден моделью"
+        safe_send_message(
+            notifier,
+            "✅ OpenAI работает.\n"
+            f"Модель: {analyzer.model}\n"
+            "Responses API: OK\n"
+            f"Web search: {search_status}\n"
+            f"Ответ: {response_text[:200]}",
+            menu_keyboard(),
+        )
+    except Exception as error:
+        safe_send_message(
+            notifier,
+            "❌ OpenAI не прошел проверку.\n"
+            f"Модель: {analyzer.model}\n"
+            f"Ошибка: {str(error)[:500]}",
+            menu_keyboard(),
+        )
+
+
+def schedule_openai_test(
+    notifier: TelegramNotifier,
+    analyzer: OpenAISignalAnalyzer,
+) -> None:
+    safe_send_message(notifier, "Проверяю OpenAI, ответ придет отдельным сообщением...")
+    threading.Thread(
+        target=run_openai_test,
+        args=(notifier, analyzer),
+        name="openai-connection-test",
+        daemon=True,
+    ).start()
+
+
 def maybe_send_rate_warning(
     scanner: str,
     failed_symbols: int,
@@ -747,6 +795,7 @@ def run_status_loop() -> None:
         return
 
     notifier = build_notifier(settings)
+    ai_analyzer = build_openai_analyzer(settings)
     history = HistoryStore(data_path("scanner.db"))
     offset = None
     while not STOP_EVENT.is_set():
@@ -795,6 +844,8 @@ def run_status_loop() -> None:
                 elif is_start_request(text):
                     set_paused(False)
                     safe_send_message(notifier, "Сканеры снова работают.", menu_keyboard())
+                elif is_openai_test_request(text):
+                    schedule_openai_test(notifier, ai_analyzer)
                 elif is_menu_request(text):
                     safe_send_message(
                         notifier,

@@ -56,6 +56,51 @@ class OpenAISignalAnalyzer:
             "tool_choice": "auto",
             "input": [{"role": "user", "content": content}],
         }
+        result = self._create_response(payload)
+
+        text = extract_output_text(result)
+        if not text:
+            raise RuntimeError("OpenAI returned no text analysis")
+        analysis = normalize_analysis(text)
+        citations = extract_citation_urls(result)
+        if citations:
+            analysis = f"{analysis}\nИсточник: {citations[0]}"
+        return analysis
+
+    def test_connection(self) -> tuple[str, bool]:
+        if not self.configured_enabled:
+            raise RuntimeError("OPENAI_ANALYSIS_ENABLED=false")
+        if not self.api_key:
+            raise RuntimeError("OPENAI_API_KEY is missing")
+
+        payload = {
+            "model": self.model,
+            "reasoning": {"effort": "low"},
+            "tools": [{"type": "web_search", "search_context_size": "low"}],
+            "tool_choice": "auto",
+            "max_output_tokens": 300,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "Обязательно выполни web search по официальному сайту OpenAI. "
+                                "Ответь только: API_TEST_OK"
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        result = self._create_response(payload)
+        text = normalize_analysis(extract_output_text(result))
+        if not text:
+            raise RuntimeError("OpenAI returned no text in test response")
+        return text, response_used_web_search(result)
+
+    def _create_response(self, payload: dict) -> dict:
         request = Request(
             f"{self.base_url}/responses",
             data=json.dumps(payload).encode("utf-8"),
@@ -75,15 +120,7 @@ class OpenAISignalAnalyzer:
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"OpenAI error {error.code}: {body[:500]}") from error
-
-        text = extract_output_text(result)
-        if not text:
-            raise RuntimeError("OpenAI returned no text analysis")
-        analysis = normalize_analysis(text)
-        citations = extract_citation_urls(result)
-        if citations:
-            analysis = f"{analysis}\nИсточник: {citations[0]}"
-        return analysis
+        return result
 
     def _build_prompt(self, signal) -> str:
         symbol = str(getattr(signal, "symbol", ""))
@@ -147,6 +184,13 @@ def extract_citation_urls(response: dict) -> list[str]:
                 if isinstance(url, str) and url.startswith(("https://", "http://")) and url not in urls:
                     urls.append(url)
     return urls
+
+
+def response_used_web_search(response: dict) -> bool:
+    return any(
+        isinstance(item, dict) and item.get("type") == "web_search_call"
+        for item in response.get("output", [])
+    )
 
 
 def normalize_analysis(text: str) -> str:

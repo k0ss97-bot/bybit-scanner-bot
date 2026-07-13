@@ -9,6 +9,7 @@ from openai_analysis import (
     compose_enriched_caption,
     extract_citation_urls,
     extract_output_text,
+    response_used_web_search,
 )
 
 
@@ -85,6 +86,31 @@ class OpenAIAnalysisTests(unittest.TestCase):
     def test_extract_citation_urls_uses_annotation_metadata(self):
         response = json.loads(FakeResponse().read().decode("utf-8"))
         self.assertEqual(extract_citation_urls(response), ["https://example.com/coin-news"])
+
+    def test_connection_checks_responses_api_and_web_search(self):
+        response = {
+            "output": [
+                {"type": "web_search_call", "status": "completed"},
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "API_TEST_OK"}],
+                },
+            ]
+        }
+        fake_response = FakeResponse()
+        fake_response.read = lambda: json.dumps(response).encode("utf-8")
+        analyzer = OpenAISignalAnalyzer("secret", model="gpt-5.6")
+
+        with patch("openai_analysis.urlopen", return_value=fake_response) as mocked:
+            text, web_search_used = analyzer.test_connection()
+
+        payload = json.loads(mocked.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(payload["tools"][0]["type"], "web_search")
+        self.assertEqual(text, "API_TEST_OK")
+        self.assertTrue(web_search_used)
+
+    def test_response_used_web_search_requires_search_call(self):
+        self.assertFalse(response_used_web_search({"output": []}))
 
     def test_photo_caption_never_exceeds_telegram_limit(self):
         caption = compose_enriched_caption("x" * 900, "y" * 500)
