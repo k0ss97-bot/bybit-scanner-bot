@@ -6,7 +6,7 @@ import threading
 import time
 from typing import Any
 
-from binance_client import BinanceClient, BinanceTicker
+from binance_client import BinanceClient, BinanceTicker, OpenInterestPoint
 from bybit_client import BybitClient, Ticker
 from config import Settings
 from history import HistoryStore
@@ -26,6 +26,15 @@ class DumpStructureCacheEntry:
     ts: int
     price_growth_lookback_pct: float
     high_price: float
+
+
+@dataclass(frozen=True)
+class DumpTimeframeMetrics:
+    label: str
+    minutes: int
+    price_change_pct: float | None
+    oi_change_pct: float | None
+    cvd_delta_usdt: float | None
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,7 @@ class DumpSignal:
     confirmation_price_change_pct: float
     confirmation_oi_change_pct: float
     confirmation_cvd_delta_usdt: float
+    timeframes: tuple[DumpTimeframeMetrics, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -650,6 +660,12 @@ class DumpScanner:
             confirmation_price_change_pct=partner.price_change_pct if partner is not None else 0.0,
             confirmation_oi_change_pct=partner.oi_change_pct if partner is not None else 0.0,
             confirmation_cvd_delta_usdt=partner.cvd_delta_usdt if partner is not None else 0.0,
+            timeframes=self._load_timeframe_metrics(
+                ticker=ticker,
+                price_change_1h=price_change_window_pct,
+                oi_change_1h=oi_change_pct,
+                cvd_delta_1h=cvd_delta,
+            ),
         )
         self._record_signal_evaluation(
             now=now,
@@ -787,6 +803,102 @@ class DumpScanner:
         if not candidates:
             return None
         return candidates[-1]
+
+    def _load_timeframe_metrics(
+        self,
+        *,
+        ticker: Ticker | BinanceTicker,
+        price_change_1h: float,
+        oi_change_1h: float,
+        cvd_delta_1h: float,
+    ) -> tuple[DumpTimeframeMetrics, ...]:
+        metrics = [
+            DumpTimeframeMetrics(
+                label="1H",
+                minutes=60,
+                price_change_pct=price_change_1h,
+                oi_change_pct=oi_change_1h,
+                cvd_delta_usdt=cvd_delta_1h,
+            )
+        ]
+        klines = []
+        oi_points: list[OpenInterestPoint] = []
+        if self.source == "BINANCE":
+            try:
+                klines = self.client.get_klines(ticker.symbol, interval="1h", limit=30)
+            except Exception as error:
+                print(
+                    f"BINANCE {ticker.symbol}: timeframe klines unavailable: {error}",
+                    flush=True,
+                )
+            try:
+                oi_points = self.client.get_open_interest_history(
+                    ticker.symbol,
+                    period="1h",
+                    limit=30,
+                )
+            except Exception as error:
+                print(
+                    f"BINANCE {ticker.symbol}: timeframe OI unavailable: {error}",
+                    flush=True,
+                )
+
+        now_ms = int(time.time() * 1000)
+        for label, hours in (("4H", 4), ("1D", 24)):
+            price_change_pct, cvd_delta_usdt = self._aggregate_hourly_klines(
+                klines,
+                hours=hours,
+                now_ms=now_ms,
+            )
+            oi_change_pct = self._aggregate_open_interest(oi_points, hours=hours)
+            if label == "1D" and price_change_pct is None:
+                price_change_pct = getattr(ticker, "price_change_24h_pct", None)
+            metrics.append(
+                DumpTimeframeMetrics(
+                    label=label,
+                    minutes=hours * 60,
+                    price_change_pct=price_change_pct,
+                    oi_change_pct=oi_change_pct,
+                    cvd_delta_usdt=cvd_delta_usdt,
+                )
+            )
+        return tuple(metrics)
+
+    @staticmethod
+    def _aggregate_hourly_klines(
+        klines,
+        *,
+        hours: int,
+        now_ms: int,
+    ) -> tuple[float | None, float | None]:
+        closed = [
+            kline
+            for kline in klines
+            if kline.start_ms + 60 * 60_000 <= now_ms
+        ]
+        if len(closed) < hours:
+            return None, None
+        window = closed[-hours:]
+        price_change_pct = pct_change(window[0].open_price, window[-1].close_price)
+        if any(kline.taker_buy_turnover is None for kline in window):
+            cvd_delta_usdt = None
+        else:
+            cvd_delta_usdt = sum(
+                2 * float(kline.taker_buy_turnover) - kline.turnover
+                for kline in window
+            )
+        return price_change_pct, cvd_delta_usdt
+
+    @staticmethod
+    def _aggregate_open_interest(
+        points: list[OpenInterestPoint],
+        *,
+        hours: int,
+    ) -> float | None:
+        valid = [point for point in points if point.open_interest > 0]
+        if len(valid) <= hours:
+            return None
+        return pct_change(valid[-hours - 1].open_interest, valid[-1].open_interest)
 
     def _signal_mode(self, oi_change_pct: float) -> str:
         if oi_change_pct <= -self.settings.dump_liquidation_min_oi_drop_pct:

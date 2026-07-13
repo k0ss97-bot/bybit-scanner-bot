@@ -28,8 +28,8 @@ def render_dump_chart(
     client: BinanceClient,
     history: HistoryStore,
     *,
-    lookback_hours: int = 48,
-    interval: str = "15m",
+    lookback_hours: int = 168,
+    interval: str = "1h",
     width: int = 1200,
     height: int = 900,
 ) -> bytes:
@@ -68,7 +68,12 @@ def render_dump_chart(
         "LIQUIDATION_FLUSH": "LIQUIDATION FLUSH",
         "SHORT_TREND": "SHORT TREND",
     }.get(signal.mode, signal.mode)
-    draw.text((left, 22), f"{signal.symbol}  |  {interval}  |  BINANCE + BYBIT", font=fonts["title"], fill=TEXT)
+    draw.text(
+        (left, 22),
+        f"{signal.symbol}  |  {interval.upper()} CHART  |  1H / 4H / 1D CONTEXT",
+        font=fonts["title"],
+        fill=TEXT,
+    )
     mode_color = RED if signal.mode == "LIQUIDATION_FLUSH" else YELLOW
     mode_box = draw.textbbox((0, 0), mode_title, font=fonts["heading"])
     mode_width = mode_box[2] - mode_box[0] + 26
@@ -142,7 +147,7 @@ def render_dump_chart(
     _draw_series_panel(
         draw,
         fonts,
-        label=f"OPEN INTEREST   window {signal.oi_change_pct:+.2f}%",
+        label=f"OPEN INTEREST   {_timeframe_summary(signal, 'oi')}",
         points=oi_points,
         left=left,
         right=right,
@@ -155,7 +160,7 @@ def render_dump_chart(
     _draw_series_panel(
         draw,
         fonts,
-        label=f"FUTURES CVD   window {signal.cvd_delta_usdt:,.0f} USDT",
+        label=f"FUTURES CVD   {_timeframe_summary(signal, 'cvd')}",
         points=cvd_points,
         left=left,
         right=right,
@@ -168,15 +173,11 @@ def render_dump_chart(
     )
 
     details = (
-        f"Score {signal.signal_score}/10    "
-        f"Drawdown {signal.drawdown_from_high_pct:+.2f}%    "
-        f"Price {signal.price_change_window_pct:+.2f}%    "
-        f"Bybit {signal.confirmation_price_change_pct:+.2f}%"
+        f"PRICE  {_timeframe_summary(signal, 'price')}    "
+        f"SCORE {signal.signal_score}/10    "
+        f"DRAWDOWN {signal.drawdown_from_high_pct:+.2f}%"
     )
     draw.text((left, height - 28), details, font=fonts["body"], fill=TEXT)
-    note = "Scenario levels are analytical markers, not automatic orders"
-    note_box = draw.textbbox((0, 0), note, font=fonts["small"])
-    draw.text((right - (note_box[2] - note_box[0]), height - 25), note, font=fonts["small"], fill=MUTED)
 
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)
@@ -265,6 +266,12 @@ def _draw_series_panel(
     zero_line: bool = False,
 ) -> None:
     points = [(ts, value) for ts, value in points if first_ms <= ts <= last_ms]
+    if len(points) > 400:
+        last_point = points[-1]
+        step = math.ceil(len(points) / 400)
+        points = points[::step]
+        if points[-1] != last_point:
+            points.append(last_point)
     draw.text((left + 8, top + 5), label, font=fonts["small"], fill=MUTED)
     if len(points) < 2:
         draw.text((left + 8, top + 34), "Collecting history...", font=fonts["body"], fill=MUTED)
@@ -296,3 +303,44 @@ def _price_text(value: float) -> str:
     if value >= 1:
         return f"{value:.4f}".rstrip("0").rstrip(".")
     return f"{value:.8f}".rstrip("0").rstrip(".")
+
+
+def _timeframe_summary(signal: DumpSignal, metric: str) -> str:
+    timeframes = getattr(signal, "timeframes", ()) or ()
+    if not timeframes:
+        value = {
+            "price": getattr(signal, "price_change_window_pct", None),
+            "oi": getattr(signal, "oi_change_pct", None),
+            "cvd": getattr(signal, "cvd_delta_usdt", None),
+        }[metric]
+        formatted = _compact_usdt(value) if metric == "cvd" else _format_optional_pct(value)
+        return f"1H {formatted}"
+
+    parts = []
+    for timeframe in timeframes:
+        if metric == "price":
+            value = getattr(timeframe, "price_change_pct", None)
+            formatted = _format_optional_pct(value)
+        elif metric == "oi":
+            value = getattr(timeframe, "oi_change_pct", None)
+            formatted = _format_optional_pct(value)
+        else:
+            value = getattr(timeframe, "cvd_delta_usdt", None)
+            formatted = _compact_usdt(value)
+        parts.append(f"{getattr(timeframe, 'label', '?')} {formatted}")
+    return " | ".join(parts)
+
+
+def _format_optional_pct(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:+.2f}%"
+
+
+def _compact_usdt(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    absolute = abs(value)
+    if absolute >= 1_000_000:
+        return f"{value / 1_000_000:+.1f}M"
+    if absolute >= 1_000:
+        return f"{value / 1_000:+.0f}K"
+    return f"{value:+.0f}"

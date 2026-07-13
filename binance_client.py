@@ -27,6 +27,12 @@ class BinanceTicker:
     low_price_24h: float = 0.0
 
 
+@dataclass(frozen=True)
+class OpenInterestPoint:
+    timestamp_ms: int
+    open_interest: float
+
+
 class BinanceClient:
     def __init__(
         self,
@@ -64,6 +70,25 @@ class BinanceClient:
     def get_open_interest(self, symbol: str) -> float:
         data = self._get("/fapi/v1/openInterest", {"symbol": symbol})
         return _to_float(data.get("openInterest"))
+
+    def get_open_interest_history(
+        self,
+        symbol: str,
+        period: str = "1h",
+        limit: int = 30,
+    ) -> list[OpenInterestPoint]:
+        data = self._get(
+            "/futures/data/openInterestHist",
+            {"symbol": symbol, "period": period, "limit": limit},
+        )
+        points = [
+            OpenInterestPoint(
+                timestamp_ms=int(item.get("timestamp", 0)),
+                open_interest=_to_float(item.get("sumOpenInterest")),
+            )
+            for item in data
+        ]
+        return sorted(points, key=lambda item: item.timestamp_ms)
 
     def get_recent_trades(self, symbol: str, limit: int = 1000) -> list[Trade]:
         return self._parse_trades(
@@ -125,7 +150,7 @@ class BinanceClient:
     def get_daily_klines(self, symbol: str, limit: int = 5) -> list[Kline]:
         return self.get_klines(symbol, interval="1d", limit=limit)
 
-    def get_klines(self, symbol: str, interval: str = "15m", limit: int = 192) -> list[Kline]:
+    def get_klines(self, symbol: str, interval: str = "1h", limit: int = 168) -> list[Kline]:
         data = self._get(
             "/fapi/v1/klines",
             {"symbol": symbol, "interval": interval, "limit": limit},
@@ -141,6 +166,7 @@ class BinanceClient:
                     close_price=_to_float(item[4]),
                     volume=_to_float(item[5]),
                     turnover=_to_float(item[7]),
+                    taker_buy_turnover=_to_float(item[10]),
                 )
             )
         return sorted(klines, key=lambda item: item.start_ms)

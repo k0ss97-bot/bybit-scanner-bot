@@ -56,6 +56,7 @@ class Kline:
     close_price: float
     volume: float
     turnover: float
+    taker_buy_turnover: float | None = None
 
 
 class BybitClient:

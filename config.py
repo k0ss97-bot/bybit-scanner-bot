@@ -51,6 +51,11 @@ def _first_env(*names: str, default: str = "") -> str:
     return default
 
 
+def _dump_chart_interval(value: str) -> str:
+    normalized = value.strip().lower()
+    return normalized if normalized in {"1h", "4h"} else "1h"
+
+
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
@@ -330,7 +335,7 @@ def get_settings() -> Settings:
         short_long_trap_max_price_change_window_pct=_float("SHORT_LONG_TRAP_MAX_PRICE_CHANGE_WINDOW_PCT", 1),
         short_long_trap_min_signal_score=_int("SHORT_LONG_TRAP_MIN_SIGNAL_SCORE", 5),
         dump_enabled=_bool("DUMP_ENABLED", True),
-        dump_window_minutes=_int("DUMP_WINDOW_MINUTES", 15),
+        dump_window_minutes=max(60, _int("DUMP_WINDOW_MINUTES", 60)),
         dump_lookback_days=_int("DUMP_LOOKBACK_DAYS", 2),
         dump_scan_interval_seconds=_int("DUMP_SCAN_INTERVAL_SECONDS", 120),
         dump_structure_cache_minutes=_int("DUMP_STRUCTURE_CACHE_MINUTES", 30),
@@ -347,8 +352,8 @@ def get_settings() -> Settings:
         dump_liquidation_min_oi_drop_pct=_float("DUMP_LIQUIDATION_MIN_OI_DROP_PCT", 1.5),
         dump_trend_min_oi_change_pct=_float("DUMP_TREND_MIN_OI_CHANGE_PCT", -0.5),
         dump_chart_enabled=_bool("DUMP_CHART_ENABLED", True),
-        dump_chart_lookback_hours=_int("DUMP_CHART_LOOKBACK_HOURS", 48),
-        dump_chart_interval=os.getenv("DUMP_CHART_INTERVAL", "15m"),
+        dump_chart_lookback_hours=max(168, _int("DUMP_CHART_LOOKBACK_HOURS", 168)),
+        dump_chart_interval=_dump_chart_interval(os.getenv("DUMP_CHART_INTERVAL", "1h")),
         openai_analysis_enabled=_bool("OPENAI_ANALYSIS_ENABLED", True),
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6"),

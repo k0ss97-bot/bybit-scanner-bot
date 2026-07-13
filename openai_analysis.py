@@ -125,6 +125,7 @@ class OpenAISignalAnalyzer:
     def _build_prompt(self, signal) -> str:
         symbol = str(getattr(signal, "symbol", ""))
         ticker = symbol.removesuffix("USDT")
+        timeframe_metrics = _format_timeframe_metrics(signal)
         return f"""
 Ты независимый риск-аналитик криптовалютного фьючерсного сигнала на шорт.
 Сначала через web search точно определи проект {ticker} ({symbol}), не перепутай
@@ -138,9 +139,8 @@ class OpenAISignalAnalyzer:
 - high разгона: {getattr(signal, 'high_price', 0):g}
 - рост до разворота: {getattr(signal, 'price_growth_lookback_pct', 0):+.2f}%
 - откат от high: {getattr(signal, 'drawdown_from_high_pct', 0):+.2f}%
-- цена за окно: {getattr(signal, 'price_change_window_pct', 0):+.2f}%
-- OI за окно: {getattr(signal, 'oi_change_pct', 0):+.2f}%
-- futures CVD delta: {getattr(signal, 'cvd_delta_usdt', 0):,.0f} USDT
+- метрики по периодам:
+{timeframe_metrics}
 - funding: {getattr(signal, 'funding_rate', 0) * 100:.4f}%
 
 Дай сценарное мнение, не обещание результата. Не выдумывай новости. Если проект
@@ -150,6 +150,28 @@ AI: SHORT / WAIT / NO TRADE, уверенность X/10
 Фон: один главный подтвержденный фактор или «значимых новостей не найдено»
 План: вход диапазоном; отмена; цели T1 и T2
 """.strip()
+
+
+def _format_timeframe_metrics(signal) -> str:
+    timeframes = getattr(signal, "timeframes", ()) or ()
+    if not timeframes:
+        return (
+            f"  1H: цена {getattr(signal, 'price_change_window_pct', 0):+.2f}%, "
+            f"OI {getattr(signal, 'oi_change_pct', 0):+.2f}%, "
+            f"futures CVD {getattr(signal, 'cvd_delta_usdt', 0):,.0f} USDT"
+        )
+    return "\n".join(
+        f"  {timeframe.label}: цена {_optional_metric(timeframe.price_change_pct, '%')}, "
+        f"OI {_optional_metric(timeframe.oi_change_pct, '%')}, "
+        f"futures CVD {_optional_metric(timeframe.cvd_delta_usdt, ' USDT', digits=0)}"
+        for timeframe in timeframes
+    )
+
+
+def _optional_metric(value, suffix: str, *, digits: int = 2) -> str:
+    if value is None:
+        return "нет данных"
+    return f"{value:+,.{digits}f}{suffix}"
 
 
 def extract_output_text(response: dict) -> str:

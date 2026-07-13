@@ -2,20 +2,27 @@ from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from bybit_client import BybitClient, Trade
 from bybit_client import Kline
-from binance_client import BinanceClient, BinanceTicker
+from binance_client import BinanceClient, BinanceTicker, OpenInterestPoint
 from chart_renderer import render_dump_chart
 from config import get_settings
-from dump_scanner import DumpScanner, MARKET_EVIDENCE, SYMBOL_ALERTS, MarketEvidence
+from dump_scanner import (
+    DumpScanner,
+    DumpTimeframeMetrics,
+    MARKET_EVIDENCE,
+    SYMBOL_ALERTS,
+    MarketEvidence,
+)
 from history import HistoryStore
 from main_bothost import enrich_telegram_signal, send_signal_with_symbol_cooldown
 from state import Snapshot, StateStore, SymbolState
-from telegram import TelegramNotifier
+from telegram import TelegramNotifier, format_dump_signal
 
 
 class FakeBybitClient(BybitClient):
@@ -78,15 +85,16 @@ class FakeBinanceClient(BinanceClient):
 
 
 class FakeChartClient:
-    def get_klines(self, symbol, interval="15m", limit=192):
+    def get_klines(self, symbol, interval="1h", limit=192):
         base_ts = 1_700_000_000_000
+        interval_minutes = {"1h": 60, "4h": 240}.get(interval, 60)
         klines = []
         for index in range(limit):
             base = 100 + index * 0.05
             close = base + (0.3 if index % 3 else -0.2)
             klines.append(
                 Kline(
-                    start_ms=base_ts + index * 15 * 60_000,
+                    start_ms=base_ts + index * interval_minutes * 60_000,
                     open_price=base,
                     high_price=max(base, close) + 0.4,
                     low_price=min(base, close) - 0.4,
@@ -107,6 +115,36 @@ class FakeChartHistory:
         ]
 
 
+class FakeMetricsClient:
+    def get_klines(self, symbol, interval="1h", limit=30):
+        hour_ms = 60 * 60_000
+        current_hour = int(time.time() * 1000) // hour_ms * hour_ms
+        return [
+            Kline(
+                start_ms=current_hour - (30 - index) * hour_ms,
+                open_price=100 + index,
+                high_price=102 + index,
+                low_price=99 + index,
+                close_price=101 + index,
+                volume=1_000,
+                turnover=1_000_000,
+                taker_buy_turnover=400_000,
+            )
+            for index in range(30)
+        ]
+
+    def get_open_interest_history(self, symbol, period="1h", limit=30):
+        hour_ms = 60 * 60_000
+        current_hour = int(time.time() * 1000) // hour_ms * hour_ms
+        return [
+            OpenInterestPoint(
+                timestamp_ms=current_hour - (30 - index) * hour_ms,
+                open_interest=1_000 + index * 10,
+            )
+            for index in range(31)
+        ]
+
+
 class FakeHttpResponse:
     def __enter__(self):
         return self
@@ -122,6 +160,9 @@ class DumpPipelineTests(unittest.TestCase):
     def setUp(self):
         self.settings = replace(
             get_settings(),
+            dump_window_minutes=60,
+            dump_chart_lookback_hours=168,
+            dump_chart_interval="1h",
             dump_max_symbols=100,
             dump_deep_max_symbols=30,
             dump_cross_exchange_required=True,
@@ -195,7 +236,7 @@ class DumpPipelineTests(unittest.TestCase):
         SYMBOL_ALERTS.clear()
         bybit_scanner = DumpScanner("BYBIT", object(), StateStore("unused.json"), self.settings)
         bybit_scanner._publish_and_get_partner(
-            MarketEvidence("BYBIT", "AAAUSDT", 1_000, "SHORT_TREND", -1.0, 0.2, -2_000, True)
+            MarketEvidence("BYBIT", "AAAUSDT", 10_000, "SHORT_TREND", -1.0, 0.2, -2_000, True)
         )
         scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
         scanner._get_dump_structure = lambda symbol, price: (20.0, -5.0, 10.5)
@@ -210,14 +251,85 @@ class DumpPipelineTests(unittest.TestCase):
         state = SymbolState(
             cumulative_cvd=-10_000,
             snapshots=[
-                Snapshot(100, 100, 0, 10, 0, 5_000_000, cvd_generation=0),
-                Snapshot(1_000, 101, -10_000, 9.9, 0, 5_000_000, cvd_generation=0),
+                Snapshot(6_400, 100, 0, 10, 0, 5_000_000, cvd_generation=0),
+                Snapshot(10_000, 101, -10_000, 9.9, 0, 5_000_000, cvd_generation=0),
             ],
         )
-        signal, _ = scanner._build_signal(1_000, ticker, state, {}, 1, True)
+        signal, _ = scanner._build_signal(10_000, ticker, state, {}, 1, True)
         self.assertIsNotNone(signal)
         self.assertEqual(signal.source, "BINANCE+BYBIT")
         self.assertEqual(signal.mode, "SHORT_TREND")
+        self.assertEqual([item.label for item in signal.timeframes], ["1H", "4H", "1D"])
+
+    def test_multitimeframe_metrics_use_hourly_binance_history(self):
+        scanner = DumpScanner(
+            "BINANCE",
+            FakeMetricsClient(),
+            StateStore("unused.json"),
+            self.settings,
+        )
+        ticker = BinanceTicker(
+            symbol="AAAUSDT",
+            price_change_24h_pct=-12,
+            quote_volume_24h=5_000_000,
+            price=100,
+        )
+        metrics = scanner._load_timeframe_metrics(
+            ticker=ticker,
+            price_change_1h=-1,
+            oi_change_1h=0.5,
+            cvd_delta_1h=-10_000,
+        )
+        self.assertEqual([item.label for item in metrics], ["1H", "4H", "1D"])
+        self.assertIsNotNone(metrics[1].price_change_pct)
+        self.assertIsNotNone(metrics[1].oi_change_pct)
+        self.assertLess(metrics[1].cvd_delta_usdt, 0)
+        self.assertIsNotNone(metrics[2].price_change_pct)
+        self.assertIsNotNone(metrics[2].oi_change_pct)
+
+    def test_legacy_15m_dump_settings_are_upgraded(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "DUMP_WINDOW_MINUTES": "15",
+                "DUMP_CHART_LOOKBACK_HOURS": "48",
+                "DUMP_CHART_INTERVAL": "15m",
+            },
+        ):
+            settings = get_settings()
+        self.assertEqual(settings.dump_window_minutes, 60)
+        self.assertEqual(settings.dump_chart_lookback_hours, 168)
+        self.assertEqual(settings.dump_chart_interval, "1h")
+
+    def test_dump_caption_contains_1h_4h_and_1d_metrics(self):
+        signal = SimpleNamespace(
+            symbol="AAAUSDT",
+            source="BINANCE+BYBIT",
+            mode="SHORT_TREND",
+            signal_score=8,
+            lookback_days=2,
+            price_growth_lookback_pct=30,
+            drawdown_from_high_pct=-12,
+            funding_rate=-0.001,
+            price=100,
+            high_price=120,
+            turnover_24h=10_000_000,
+            confirmation_source="BYBIT",
+            confirmation_price_change_pct=-1,
+            confirmation_oi_change_pct=0.5,
+            confirmation_cvd_delta_usdt=-20_000,
+            timeframes=(
+                DumpTimeframeMetrics("1H", 60, -1, 0.5, -10_000),
+                DumpTimeframeMetrics("4H", 240, -5, 2, -500_000),
+                DumpTimeframeMetrics("1D", 1440, -12, 4, -5_000_000),
+            ),
+        )
+        caption = format_dump_signal(signal)
+        self.assertIn("1H |", caption)
+        self.assertIn("4H |", caption)
+        self.assertIn("1D |", caption)
+        self.assertNotIn("15m", caption)
+        self.assertLess(len(caption), 800)
 
     def test_signal_reviews_use_15_30_60_240_minute_horizons(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -404,6 +516,11 @@ class DumpPipelineTests(unittest.TestCase):
             price=108,
             high_price=112,
             confirmation_price_change_pct=-1.5,
+            timeframes=(
+                DumpTimeframeMetrics("1H", 60, -2, 2, -50_000),
+                DumpTimeframeMetrics("4H", 240, -5, 3, -250_000),
+                DumpTimeframeMetrics("1D", 1440, -12, 5, -1_500_000),
+            ),
         )
         png = render_dump_chart(signal, FakeChartClient(), FakeChartHistory())
         self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))

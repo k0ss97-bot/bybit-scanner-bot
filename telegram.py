@@ -160,50 +160,59 @@ class TelegramNotifier:
 
 def format_dump_signal(signal: DumpSignal) -> str:
     bybit_chart_url = f"https://www.bybit.com/trade/usdt/{signal.symbol}"
-    data_chart_url = f"https://www.binance.com/en/futures/{signal.symbol}"
-    data_chart_line = (
-        f"График данных Binance: {data_chart_url}\n"
-        if "BINANCE" in signal.source.upper()
-        else ""
-    )
     mode_title = {
         "LIQUIDATION_FLUSH": "Ликвидационный слив",
         "SHORT_TREND": "Продолжение шорт-тренда",
     }.get(signal.mode, signal.mode)
-    reason = (
-        "Цена и OI падают одновременно: закрываются или ликвидируются лонги, "
-        "а поток futures-сделок подтверждает продажи."
-        if signal.mode == "LIQUIDATION_FLUSH"
-        else "Цена падает при стабильном или растущем OI: продавцы продолжают "
-        "набирать шорты, а futures CVD подтверждает направление."
-    )
+    timeframe_lines = _dump_timeframe_lines(signal)
     confirmation_block = ""
     if signal.confirmation_source:
         confirmation_block = (
-            f"Подтверждение {signal.confirmation_source}:\n"
-            f"Price: {signal.confirmation_price_change_pct:+.2f}%\n"
-            f"OI: {signal.confirmation_oi_change_pct:+.2f}%\n"
-            f"CVD delta: {signal.confirmation_cvd_delta_usdt:,.0f} USDT\n\n"
+            f"Bybit 1H: цена {signal.confirmation_price_change_pct:+.2f}% | "
+            f"OI {signal.confirmation_oi_change_pct:+.2f}% | "
+            f"CVD {_compact_usdt(signal.confirmation_cvd_delta_usdt)}\n"
         )
     return (
         f"🔻 DUMP TREND | {signal.source.replace('+', ' + ')}\n"
-        f"Модель: {mode_title}\n\n"
-        f"Монета: {signal.symbol}\n"
-        f"График Bybit: {bybit_chart_url}\n"
-        f"{data_chart_line}"
-        f"Окно: {signal.window_minutes}m\n\n"
-        f"Сила сигнала: {signal.signal_score}/10\n"
+        f"{signal.symbol} | {mode_title} | {signal.signal_score}/10\n"
+        f"Bybit: {bybit_chart_url}\n\n"
+        f"Период | Цена | OI | Futures CVD\n"
+        f"{timeframe_lines}\n\n"
         f"Рост за {signal.lookback_days}d: {signal.price_growth_lookback_pct:+.2f}%\n"
         f"Откат от high: {signal.drawdown_from_high_pct:+.2f}%\n"
-        f"Price за окно: {signal.price_change_window_pct:+.2f}%\n"
-        f"Futures CVD delta: {signal.cvd_delta_usdt:,.0f} USDT\n"
-        f"OI за окно: {signal.oi_change_pct:+.2f}%\n"
         f"Funding: {signal.funding_rate * 100:.4f}%\n"
-        f"Last price: {signal.price:g}\n"
-        f"High разгона: {signal.high_price:g}\n"
-        f"Turnover 24h: {signal.turnover_24h:,.0f} USDT\n"
-        f"New futures trades: {signal.new_trades}\n"
-        f"Confirmations: {signal.consecutive_matches}\n\n"
+        f"Цена: {signal.price:g} | high: {signal.high_price:g}\n"
+        f"Оборот 24h: {_compact_usdt(signal.turnover_24h)}\n"
         f"{confirmation_block}"
-        f"Причина: {reason}"
     )
+
+
+def _dump_timeframe_lines(signal: DumpSignal) -> str:
+    timeframes = getattr(signal, "timeframes", ()) or ()
+    if not timeframes:
+        return (
+            f"1H | {_optional_pct(getattr(signal, 'price_change_window_pct', None))} | "
+            f"{_optional_pct(getattr(signal, 'oi_change_pct', None))} | "
+            f"{_compact_usdt(getattr(signal, 'cvd_delta_usdt', None))}"
+        )
+    return "\n".join(
+        f"{timeframe.label} | {_optional_pct(timeframe.price_change_pct)} | "
+        f"{_optional_pct(timeframe.oi_change_pct)} | "
+        f"{_compact_usdt(timeframe.cvd_delta_usdt)}"
+        for timeframe in timeframes
+    )
+
+
+def _optional_pct(value: float | None) -> str:
+    return "нет данных" if value is None else f"{value:+.2f}%"
+
+
+def _compact_usdt(value: float | None) -> str:
+    if value is None:
+        return "нет данных"
+    absolute = abs(value)
+    if absolute >= 1_000_000:
+        return f"{value / 1_000_000:+.1f}M USDT"
+    if absolute >= 1_000:
+        return f"{value / 1_000:+.0f}K USDT"
+    return f"{value:+.0f} USDT"
