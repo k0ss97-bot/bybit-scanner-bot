@@ -26,10 +26,10 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    def send_message(self, text: str, reply_markup: dict | None = None) -> None:
+    def send_message(self, text: str, reply_markup: dict | None = None) -> dict:
         if not self.enabled:
             print(text)
-            return
+            return {}
 
         payload = {
             "chat_id": self.chat_id,
@@ -39,19 +39,46 @@ class TelegramNotifier:
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
 
-        self._post("sendMessage", payload)
+        return self._post("sendMessage", payload)
 
-    def send_photo(self, photo: bytes, caption: str = "") -> None:
+    def send_photo(self, photo: bytes, caption: str = "") -> dict:
         if not self.enabled:
             print(caption or f"Chart image: {len(photo)} bytes")
-            return
-        self._post_multipart(
+            return {}
+        return self._post_multipart(
             "sendPhoto",
             fields={"chat_id": self.chat_id, "caption": caption},
             file_field="photo",
             filename="dump-signal.png",
             content_type="image/png",
             content=photo,
+        )
+
+    def edit_message_caption(self, message_id: int, caption: str) -> dict:
+        if not self.enabled:
+            print(caption)
+            return {}
+        return self._post(
+            "editMessageCaption",
+            {
+                "chat_id": self.chat_id,
+                "message_id": message_id,
+                "caption": caption,
+            },
+        )
+
+    def edit_message_text(self, message_id: int, text: str) -> dict:
+        if not self.enabled:
+            print(text)
+            return {}
+        return self._post(
+            "editMessageText",
+            {
+                "chat_id": self.chat_id,
+                "message_id": message_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
         )
 
     def get_updates(self, offset: int | None = None, timeout_seconds: int = 20) -> list[dict]:

@@ -13,6 +13,7 @@ from chart_renderer import render_dump_chart
 from config import get_settings
 from dump_scanner import DumpScanner
 from history import HistoryStore
+from openai_analysis import OpenAISignalAnalyzer, compose_enriched_caption
 from state import StateStore
 from telegram import (
     TelegramNotifier,
@@ -55,13 +56,73 @@ def safe_send_message(
         return False
 
 
-def safe_send_photo(notifier: TelegramNotifier, photo: bytes, caption: str) -> bool:
+def telegram_message_id(response: object) -> int | None:
+    if not isinstance(response, dict):
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return None
+    message_id = result.get("message_id")
+    return int(message_id) if isinstance(message_id, int) else None
+
+
+def safe_send_signal_photo(
+    notifier: TelegramNotifier,
+    photo: bytes,
+    caption: str,
+) -> tuple[bool, int | None]:
     try:
-        notifier.send_photo(photo, caption=caption)
-        return True
+        response = notifier.send_photo(photo, caption=caption)
+        return True, telegram_message_id(response)
     except Exception as error:
         print(f"Telegram photo send failed: {error}", flush=True)
-        return False
+        return False, None
+
+
+def safe_send_signal_text(
+    notifier: TelegramNotifier,
+    text: str,
+) -> tuple[bool, int | None]:
+    try:
+        response = notifier.send_message(text)
+        return True, telegram_message_id(response)
+    except Exception as error:
+        print(f"Telegram send failed: {error}", flush=True)
+        return False, None
+
+
+def enrich_telegram_signal(
+    *,
+    notifier: TelegramNotifier,
+    analyzer: OpenAISignalAnalyzer,
+    signal,
+    base_message: str,
+    message_id: int,
+    chart: bytes | None,
+    is_photo: bool,
+) -> None:
+    symbol = str(getattr(signal, "symbol", ""))
+    try:
+        analysis = analyzer.analyze(signal, chart)
+        limit = 1024 if is_photo else 4096
+        enriched = compose_enriched_caption(base_message, analysis, limit=limit)
+        if is_photo:
+            notifier.edit_message_caption(message_id, enriched)
+        else:
+            notifier.edit_message_text(message_id, enriched)
+        print(f"OpenAI analysis added to {symbol} signal", flush=True)
+    except Exception as error:
+        print(f"OpenAI analysis failed for {symbol}: {error}", flush=True)
+
+
+def schedule_telegram_signal_enrichment(**kwargs) -> None:
+    thread = threading.Thread(
+        target=enrich_telegram_signal,
+        kwargs=kwargs,
+        name=f"openai-{getattr(kwargs.get('signal'), 'symbol', 'signal')}",
+        daemon=True,
+    )
+    thread.start()
 
 
 def request_stop(reason: str) -> None:
@@ -91,6 +152,8 @@ def send_signal_with_symbol_cooldown(
     signal_type: str,
     formatter,
     chart_renderer=None,
+    ai_analyzer: OpenAISignalAnalyzer | None = None,
+    ai_scheduler=None,
 ) -> bool:
     symbol = str(getattr(signal, "symbol", ""))
     now = int(time.time())
@@ -114,15 +177,19 @@ def send_signal_with_symbol_cooldown(
 
     message = formatter(signal)
     sent = False
+    message_id = None
+    is_photo = False
+    chart = None
     if chart_renderer is not None and settings.dump_chart_enabled:
         try:
             chart = chart_renderer(signal)
-            sent = safe_send_photo(notifier, chart, message)
+            sent, message_id = safe_send_signal_photo(notifier, chart, message)
+            is_photo = sent
         except Exception as error:
             print(f"Chart render failed for {symbol}: {error}", flush=True)
 
     if not sent:
-        sent = safe_send_message(notifier, message)
+        sent, message_id = safe_send_signal_text(notifier, message)
 
     if not sent:
         history.release_telegram_symbol_alert(symbol=symbol, ts=now)
@@ -146,6 +213,18 @@ def send_signal_with_symbol_cooldown(
         price_change_pct=signal.price_change_window_pct,
         payload=str(signal),
     )
+
+    if ai_analyzer is not None and ai_analyzer.enabled and message_id is not None:
+        scheduler = ai_scheduler or schedule_telegram_signal_enrichment
+        scheduler(
+            notifier=notifier,
+            analyzer=ai_analyzer,
+            signal=signal,
+            base_message=message,
+            message_id=message_id,
+            chart=chart,
+            is_photo=is_photo,
+        )
     return True
 
 
@@ -155,6 +234,17 @@ def build_notifier(settings) -> TelegramNotifier:
         settings.telegram_chat_id if settings.telegram_enabled else "",
         timeout_seconds=5,
         verify_ssl=settings.verify_ssl,
+    )
+
+
+def build_openai_analyzer(settings) -> OpenAISignalAnalyzer:
+    return OpenAISignalAnalyzer(
+        settings.openai_api_key,
+        model=settings.openai_model,
+        base_url=settings.openai_base_url,
+        timeout_seconds=settings.openai_timeout_seconds,
+        verify_ssl=settings.verify_ssl,
+        enabled=settings.openai_analysis_enabled,
     )
 
 
@@ -370,6 +460,10 @@ def format_settings_message(settings) -> str:
         f"DUMP_CHART_ENABLED={str(settings.dump_chart_enabled).lower()}\n"
         f"DUMP_CHART_LOOKBACK_HOURS={settings.dump_chart_lookback_hours}\n"
         f"DUMP_CHART_INTERVAL={settings.dump_chart_interval}\n"
+        f"OPENAI_ANALYSIS_ENABLED={str(settings.openai_analysis_enabled).lower()}\n"
+        f"OPENAI_KEY_PRESENT={str(bool(settings.openai_api_key)).lower()}\n"
+        f"OPENAI_MODEL={settings.openai_model}\n"
+        f"OPENAI_TIMEOUT_SECONDS={settings.openai_timeout_seconds}\n"
         f"DUMP_STRUCTURE_CACHE_MINUTES={settings.dump_structure_cache_minutes}\n"
         f"DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT={settings.dump_min_price_growth_lookback_pct:g}\n"
         f"DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT={settings.dump_min_drawdown_from_high_pct:g}\n"
@@ -751,6 +845,7 @@ def run_dump_loop(source: str) -> None:
     )
     scanner.store.load()
     notifier = build_notifier(settings)
+    ai_analyzer = build_openai_analyzer(settings)
 
     while not STOP_EVENT.is_set():
         if is_paused(scanner_name):
@@ -784,6 +879,7 @@ def run_dump_loop(source: str) -> None:
                     signal_type=f"dump_{source.lower()}",
                     formatter=format_dump_signal,
                     chart_renderer=chart_renderer,
+                    ai_analyzer=ai_analyzer,
                 )
             reviewed = history.update_signal_reviews()
             history.cleanup_old_data(
@@ -818,7 +914,9 @@ def main() -> None:
         "Config check: "
         f"telegram_enabled={settings.telegram_enabled}, "
         f"token_present={bool(settings.telegram_bot_token)}, "
-        f"chat_id_present={bool(settings.telegram_chat_id)}",
+        f"chat_id_present={bool(settings.telegram_chat_id)}, "
+        f"openai_analysis_enabled={settings.openai_analysis_enabled}, "
+        f"openai_key_present={bool(settings.openai_api_key)}",
         flush=True,
     )
     dump_bybit_thread = threading.Thread(

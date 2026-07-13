@@ -68,6 +68,11 @@ DUMP_TREND_MIN_OI_CHANGE_PCT=-0.5
 DUMP_CHART_ENABLED=true
 DUMP_CHART_LOOKBACK_HOURS=48
 DUMP_CHART_INTERVAL=15m
+OPENAI_ANALYSIS_ENABLED=true
+OPENAI_API_KEY=ваш_секретный_ключ_OpenAI
+OPENAI_MODEL=gpt-5.6
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_TIMEOUT_SECONDS=45
 DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT=15
 DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT=4
 DUMP_MIN_PRICE_DROP_WINDOW_PCT=0.5
@@ -121,3 +126,5 @@ DUMP_SYMBOL_COOLDOWN_MINUTES=60
 Финальный сигнал формируется по данным Binance и требует свежего подтверждения направления на Bybit. Модель `LIQUIDATION_FLUSH` означает падение цены вместе с OI, модель `SHORT_TREND` — падение цены при стабильном или растущем OI. Результаты отправленных сигналов рассчитываются через 15, 30, 60 и 240 минут.
 
 `DUMP_CHART_ENABLED=true` отправляет одно сообщение: PNG-график со свечами Binance за 48 часов, объемом, локальными OI/CVD и уровнями signal, invalidation, target 1R/2R, а вся статистика находится в подписи к изображению. Картинка строится только для готового сигнала; при ошибке бот отправляет одно обычное текстовое сообщение.
+
+`OPENAI_ANALYSIS_ENABLED=true` включает дополнительную проверку готового сигнала. Добавьте секрет `OPENAI_API_KEY` в переменные Bothost, не в GitHub и не в код. Сигнал приходит без задержки, а после анализа OpenAI редактирует то же Telegram-сообщение: учитывает PNG-график, метрики, свежий интернет-фон и добавляет сценарные уровни входа, отмены и целей. При ошибке OpenAI исходный сигнал остается без изменений.

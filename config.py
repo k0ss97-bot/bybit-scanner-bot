@@ -185,6 +185,11 @@ class Settings:
     dump_chart_enabled: bool
     dump_chart_lookback_hours: int
     dump_chart_interval: str
+    openai_analysis_enabled: bool
+    openai_api_key: str
+    openai_model: str
+    openai_base_url: str
+    openai_timeout_seconds: int
     dump_min_price_growth_lookback_pct: float
     dump_min_drawdown_from_high_pct: float
     dump_min_price_drop_window_pct: float
@@ -344,6 +349,11 @@ def get_settings() -> Settings:
         dump_chart_enabled=_bool("DUMP_CHART_ENABLED", True),
         dump_chart_lookback_hours=_int("DUMP_CHART_LOOKBACK_HOURS", 48),
         dump_chart_interval=os.getenv("DUMP_CHART_INTERVAL", "15m"),
+        openai_analysis_enabled=_bool("OPENAI_ANALYSIS_ENABLED", True),
+        openai_api_key=os.getenv("OPENAI_API_KEY", ""),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6"),
+        openai_base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        openai_timeout_seconds=_int("OPENAI_TIMEOUT_SECONDS", 45),
         dump_min_price_growth_lookback_pct=_float("DUMP_MIN_PRICE_GROWTH_LOOKBACK_PCT", 15),
         dump_min_drawdown_from_high_pct=_float("DUMP_MIN_DRAWDOWN_FROM_HIGH_PCT", 4),
         dump_min_price_drop_window_pct=_float("DUMP_MIN_PRICE_DROP_WINDOW_PCT", 0.5),

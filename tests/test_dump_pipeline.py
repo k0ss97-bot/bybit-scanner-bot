@@ -13,7 +13,7 @@ from chart_renderer import render_dump_chart
 from config import get_settings
 from dump_scanner import DumpScanner, MARKET_EVIDENCE, SYMBOL_ALERTS, MarketEvidence
 from history import HistoryStore
-from main_bothost import send_signal_with_symbol_cooldown
+from main_bothost import enrich_telegram_signal, send_signal_with_symbol_cooldown
 from state import Snapshot, StateStore, SymbolState
 from telegram import TelegramNotifier
 
@@ -31,16 +31,37 @@ class FakeNotifier:
         self.fail = fail
         self.photos = []
         self.messages = []
+        self.caption_edits = []
+        self.text_edits = []
 
     def send_message(self, text, reply_markup=None):
         if self.fail:
             raise RuntimeError("send failed")
         self.messages.append(text)
+        return {"result": {"message_id": 41}}
 
     def send_photo(self, photo, caption=""):
         if self.fail:
             raise RuntimeError("photo failed")
         self.photos.append((photo, caption))
+        return {"result": {"message_id": 42}}
+
+    def edit_message_caption(self, message_id, caption):
+        self.caption_edits.append((message_id, caption))
+
+    def edit_message_text(self, message_id, text):
+        self.text_edits.append((message_id, text))
+
+
+class FakeAnalyzer:
+    enabled = True
+
+    def analyze(self, signal, chart=None):
+        return (
+            "AI: SHORT, уверенность 7/10\n"
+            "Фон: значимых новостей не найдено\n"
+            "План: вход 99-100; отмена 103; цели 95 и 90"
+        )
 
 
 class FakeBinanceClient(BinanceClient):
@@ -305,6 +326,38 @@ class DumpPipelineTests(unittest.TestCase):
             self.assertEqual(notifier.photos[0][0], b"png-bytes")
             self.assertEqual(notifier.photos[0][1], "signal")
             self.assertEqual(notifier.messages, [])
+
+    def test_openai_analysis_edits_the_same_photo_message(self):
+        signal = SimpleNamespace(
+            symbol="AAAUSDT",
+            price=100,
+            oi_change_pct=1,
+            cvd_delta_usdt=-10_000,
+            price_change_window_pct=-1,
+            mode="SHORT_TREND",
+            signal_score=8,
+        )
+        notifier = FakeNotifier()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            sent = send_signal_with_symbol_cooldown(
+                notifier=notifier,
+                history=history,
+                settings=self.settings,
+                signal=signal,
+                signal_type="dump_binance",
+                formatter=lambda _: "signal",
+                chart_renderer=lambda _: b"png-bytes",
+                ai_analyzer=FakeAnalyzer(),
+                ai_scheduler=lambda **kwargs: enrich_telegram_signal(**kwargs),
+            )
+        self.assertTrue(sent)
+        self.assertEqual(len(notifier.photos), 1)
+        self.assertEqual(len(notifier.caption_edits), 1)
+        message_id, caption = notifier.caption_edits[0]
+        self.assertEqual(message_id, 42)
+        self.assertIn("OpenAI + интернет", caption)
+        self.assertIn("вход 99-100", caption)
 
     def test_chart_failure_falls_back_to_one_text_message(self):
         signal = SimpleNamespace(
