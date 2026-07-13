@@ -60,6 +60,8 @@ DUMP_REQUIRE_BYBIT_LISTING=true
 DUMP_BYBIT_SYMBOL_CACHE_MINUTES=15
 DUMP_EVALUATION_ENABLED=true
 DUMP_MAX_EVALUATION_SYMBOLS=120
+DUMP_WATCHLIST_SNAPSHOT_MINUTES=30
+DUMP_EVALUATION_SNAPSHOT_MINUTES=60
 DUMP_TRADE_MAX_PAGES=5
 DUMP_CROSS_EXCHANGE_REQUIRED=true
 DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS=300
@@ -121,7 +123,9 @@ DUMP_SYMBOL_COOLDOWN_MINUTES=60
 
 `DUMP_REQUIRE_BYBIT_LISTING=true` оставляет Binance-данные только для монет, которые есть на Bybit linear USDT. Если монеты нет на Bybit, бот не покажет по ней сигнал.
 
-`DUMP_EVALUATION_ENABLED=true` записывает последнюю причину по монетам: прошла ли монета в рабочий top, была ли вне `DUMP_MAX_SYMBOLS`, ушла ли на cooldown или не прошла условия сигнала. Легкий этап проверяет top-100, а дорогие запросы сделок и OI выполняются только для `DUMP_DEEP_MAX_SYMBOLS` кандидатов с нужным разгоном и откатом.
+`DUMP_EVALUATION_ENABLED=true` записывает последнюю причину по монетам: прошла ли монета в рабочий top, была ли вне `DUMP_MAX_SYMBOLS`, ушла ли на cooldown или не прошла условия сигнала. `DUMP_EVALUATION_SNAPSHOT_MINUTES=60` дополнительно сохраняет компактную часовую историю по каждой монете, а `DUMP_WATCHLIST_SNAPSHOT_MINUTES=30` ограничивает watchlist одним лучшим состоянием монеты за полчаса. Это уменьшает нагрузку SQLite и сохраняет данные для последующего разбора пропущенных движений. Легкий этап проверяет top-100, а дорогие запросы сделок и OI выполняются только для `DUMP_DEEP_MAX_SYMBOLS` кандидатов с нужным разгоном и откатом.
+
+Funding загружается отдельным массовым запросом Binance. Если биржа временно не вернула funding, бот помечает метрику как недоступную и не начисляет за нее балл вместо подстановки ложного нуля. Нулевой или отсутствующий OI также больше не считается стабильным OI: такой кандидат блокируется до появления двух валидных часовых точек.
 
 Финальный сигнал формируется по часовому окну Binance и требует свежего часового подтверждения направления на Bybit. Модель `LIQUIDATION_FLUSH` означает падение цены вместе с OI, модель `SHORT_TREND` — падение цены при стабильном или растущем OI. В готовом сигнале отдельно показываются цена, OI и futures CVD за `1H`, `4H` и `1D`. Результаты отправленных сигналов рассчитываются через 15, 30, 60 и 240 минут.
 

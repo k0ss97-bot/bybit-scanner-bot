@@ -141,7 +141,7 @@ class OpenAISignalAnalyzer:
 - откат от high: {getattr(signal, 'drawdown_from_high_pct', 0):+.2f}%
 - метрики по периодам:
 {timeframe_metrics}
-- funding: {getattr(signal, 'funding_rate', 0) * 100:.4f}%
+- funding: {_format_funding(signal)}
 
 Дай сценарное мнение, не обещание результата. Не выдумывай новости. Если проект
 или актуальный фон нельзя надежно подтвердить, прямо скажи это. Ответ только на
@@ -172,6 +172,12 @@ def _optional_metric(value, suffix: str, *, digits: int = 2) -> str:
     if value is None:
         return "нет данных"
     return f"{value:+,.{digits}f}{suffix}"
+
+
+def _format_funding(signal) -> str:
+    if not getattr(signal, "funding_available", True):
+        return "нет данных"
+    return f"{getattr(signal, 'funding_rate', 0) * 100:.4f}%"
 
 
 def extract_output_text(response: dict) -> str:

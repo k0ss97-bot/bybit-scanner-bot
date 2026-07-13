@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 import time
 
 
 REVIEW_SCHEMA_VERSION = "scanner-filtered-v3-15-30-60-240"
+REVIEW_METRICS_VERSION = "entry-baseline-v1"
 
 
 class HistoryStore:
@@ -15,8 +18,17 @@ class HistoryStore:
         self._last_cleanup_ts = 0
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.path, timeout=30)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path, timeout=30)
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -72,7 +84,9 @@ class HistoryStore:
                     spot_cvd_change_pct REAL NOT NULL,
                     spot_cvd_delta_usdt REAL NOT NULL,
                     price_change_pct REAL NOT NULL,
-                    payload TEXT NOT NULL
+                    payload TEXT NOT NULL,
+                    model_version TEXT NOT NULL DEFAULT '',
+                    settings_snapshot TEXT NOT NULL DEFAULT '{}'
                 )
                 """
             )
@@ -170,6 +184,7 @@ class HistoryStore:
                     passed_checks TEXT NOT NULL,
                     missing_checks TEXT NOT NULL,
                     payload TEXT NOT NULL,
+                    model_version TEXT NOT NULL DEFAULT '',
                     UNIQUE(scanner, symbol)
                 )
                 """
@@ -184,6 +199,47 @@ class HistoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_scanner_evaluations_ts
                 ON scanner_evaluations(ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scanner_evaluation_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scanner TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    bucket_ts INTEGER NOT NULL,
+                    source_rank INTEGER NOT NULL,
+                    selected INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    score INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    turnover_24h REAL NOT NULL,
+                    price_growth_lookback_pct REAL NOT NULL,
+                    drawdown_from_high_pct REAL NOT NULL,
+                    oi_change_pct REAL NOT NULL,
+                    cvd_delta_usdt REAL NOT NULL,
+                    price_change_window_pct REAL NOT NULL,
+                    funding_rate REAL NOT NULL,
+                    passed_checks TEXT NOT NULL,
+                    missing_checks TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    UNIQUE(scanner, symbol, bucket_ts)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scanner_evaluation_history_scanner_ts
+                ON scanner_evaluation_history(scanner, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_scanner_evaluation_history_symbol_ts
+                ON scanner_evaluation_history(symbol, ts)
                 """
             )
             conn.execute(
@@ -213,7 +269,38 @@ class HistoryStore:
                 )
                 """
             )
+            self._ensure_column(
+                conn,
+                table="signals",
+                column="model_version",
+                definition="TEXT NOT NULL DEFAULT ''",
+            )
+            self._ensure_column(
+                conn,
+                table="signals",
+                column="settings_snapshot",
+                definition="TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._ensure_column(
+                conn,
+                table="scanner_evaluations",
+                column="model_version",
+                definition="TEXT NOT NULL DEFAULT ''",
+            )
             self._migrate_signal_reviews(conn)
+            self._migrate_review_metrics(conn)
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _migrate_signal_reviews(self, conn: sqlite3.Connection) -> None:
         row = conn.execute(
@@ -231,6 +318,29 @@ class HistoryStore:
             VALUES (?, ?)
             """,
             ("signal_reviews_version", REVIEW_SCHEMA_VERSION),
+        )
+
+    def _migrate_review_metrics(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT value FROM app_meta WHERE key = ?",
+            ("review_metrics_version",),
+        ).fetchone()
+        if row and row[0] == REVIEW_METRICS_VERSION:
+            return
+
+        conn.execute(
+            """
+            UPDATE signal_reviews
+            SET max_favorable_pct = MAX(0, max_favorable_pct),
+                max_adverse_pct = MAX(0, max_adverse_pct)
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO app_meta (key, value)
+            VALUES (?, ?)
+            """,
+            ("review_metrics_version", REVIEW_METRICS_VERSION),
         )
 
     def cleanup_old_data(
@@ -269,6 +379,11 @@ class HistoryStore:
                 deleted += cursor.rowcount if cursor.rowcount != -1 else 0
                 cursor = conn.execute(
                     "DELETE FROM scanner_evaluations WHERE ts < ?",
+                    (watchlist_cutoff,),
+                )
+                deleted += cursor.rowcount if cursor.rowcount != -1 else 0
+                cursor = conn.execute(
+                    "DELETE FROM scanner_evaluation_history WHERE ts < ?",
                     (watchlist_cutoff,),
                 )
                 deleted += cursor.rowcount if cursor.rowcount != -1 else 0
@@ -328,6 +443,8 @@ class HistoryStore:
         spot_cvd_delta_usdt: float,
         price_change_pct: float,
         payload: str,
+        model_version: str = "",
+        settings_snapshot: str = "{}",
         ts: int | None = None,
     ) -> int:
         ts = ts or int(time.time())
@@ -338,9 +455,9 @@ class HistoryStore:
                     signal_type, symbol, ts, price, open_interest_change_pct,
                     futures_cvd_change_pct, futures_cvd_delta_usdt,
                     spot_cvd_change_pct, spot_cvd_delta_usdt,
-                    price_change_pct, payload
+                    price_change_pct, payload, model_version, settings_snapshot
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     signal_type,
@@ -354,6 +471,8 @@ class HistoryStore:
                     spot_cvd_delta_usdt,
                     price_change_pct,
                     payload,
+                    model_version,
+                    settings_snapshot,
                 ),
             )
             signal_id = int(cursor.lastrowid)
@@ -653,17 +772,20 @@ class HistoryStore:
         ts = ts or int(time.time())
         with self._connect() as conn:
             if cooldown_seconds > 0:
+                bucket_start = ts - (ts % cooldown_seconds)
                 existing = conn.execute(
                     """
-                    SELECT id
+                    SELECT id, score
                     FROM watchlist_candidates
-                    WHERE scanner = ? AND symbol = ? AND ts >= ?
+                    WHERE scanner = ? AND symbol = ? AND ts >= ? AND ts < ?
                     ORDER BY ts DESC
                     LIMIT 1
                     """,
-                    (scanner, symbol, ts - cooldown_seconds),
+                    (scanner, symbol, bucket_start, bucket_start + cooldown_seconds),
                 ).fetchone()
                 if existing:
+                    if score <= existing[1]:
+                        return False
                     conn.execute(
                         """
                         UPDATE watchlist_candidates
@@ -727,9 +849,13 @@ class HistoryStore:
         passed_checks: list[str] | None = None,
         missing_checks: list[str] | None = None,
         payload: str = "",
+        model_version: str = "",
+        snapshot_interval_seconds: int = 3600,
     ) -> None:
         passed = ",".join(passed_checks or [])
         missing = ",".join(missing_checks or [])
+        snapshot_interval_seconds = max(60, snapshot_interval_seconds)
+        bucket_ts = ts - (ts % snapshot_interval_seconds)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -738,9 +864,10 @@ class HistoryStore:
                     reason, score, price, turnover_24h,
                     price_growth_lookback_pct, drawdown_from_high_pct,
                     oi_change_pct, cvd_delta_usdt, price_change_window_pct,
-                    funding_rate, passed_checks, missing_checks, payload
+                    funding_rate, passed_checks, missing_checks, payload,
+                    model_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(scanner, symbol) DO UPDATE SET
                     source = excluded.source,
                     ts = excluded.ts,
@@ -759,7 +886,18 @@ class HistoryStore:
                     funding_rate = excluded.funding_rate,
                     passed_checks = excluded.passed_checks,
                     missing_checks = excluded.missing_checks,
-                    payload = excluded.payload
+                    payload = excluded.payload,
+                    model_version = excluded.model_version
+                WHERE scanner_evaluations.ts <= excluded.ts - ?
+                   OR scanner_evaluations.source != excluded.source
+                   OR scanner_evaluations.source_rank != excluded.source_rank
+                   OR scanner_evaluations.selected != excluded.selected
+                   OR scanner_evaluations.status != excluded.status
+                   OR scanner_evaluations.reason != excluded.reason
+                   OR scanner_evaluations.score != excluded.score
+                   OR scanner_evaluations.passed_checks != excluded.passed_checks
+                   OR scanner_evaluations.missing_checks != excluded.missing_checks
+                   OR scanner_evaluations.model_version != excluded.model_version
                 """,
                 (
                     scanner,
@@ -782,6 +920,69 @@ class HistoryStore:
                     passed,
                     missing,
                     payload,
+                    model_version,
+                    snapshot_interval_seconds,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO scanner_evaluation_history (
+                    scanner, source, symbol, ts, bucket_ts, source_rank,
+                    selected, status, reason, score, price, turnover_24h,
+                    price_growth_lookback_pct, drawdown_from_high_pct,
+                    oi_change_pct, cvd_delta_usdt, price_change_window_pct,
+                    funding_rate, passed_checks, missing_checks, model_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scanner, symbol, bucket_ts) DO UPDATE SET
+                    source = excluded.source,
+                    ts = excluded.ts,
+                    source_rank = excluded.source_rank,
+                    selected = excluded.selected,
+                    status = excluded.status,
+                    reason = excluded.reason,
+                    score = excluded.score,
+                    price = excluded.price,
+                    turnover_24h = excluded.turnover_24h,
+                    price_growth_lookback_pct = excluded.price_growth_lookback_pct,
+                    drawdown_from_high_pct = excluded.drawdown_from_high_pct,
+                    oi_change_pct = excluded.oi_change_pct,
+                    cvd_delta_usdt = excluded.cvd_delta_usdt,
+                    price_change_window_pct = excluded.price_change_window_pct,
+                    funding_rate = excluded.funding_rate,
+                    passed_checks = excluded.passed_checks,
+                    missing_checks = excluded.missing_checks,
+                    model_version = excluded.model_version
+                WHERE excluded.score > scanner_evaluation_history.score
+                   OR excluded.selected > scanner_evaluation_history.selected
+                   OR (
+                       excluded.status = 'signal'
+                       AND scanner_evaluation_history.status != 'signal'
+                   )
+                   OR excluded.model_version != scanner_evaluation_history.model_version
+                """,
+                (
+                    scanner,
+                    source,
+                    symbol,
+                    ts,
+                    bucket_ts,
+                    source_rank,
+                    1 if selected else 0,
+                    status,
+                    reason,
+                    score,
+                    price,
+                    turnover_24h,
+                    price_growth_lookback_pct,
+                    drawdown_from_high_pct,
+                    oi_change_pct,
+                    cvd_delta_usdt,
+                    price_change_window_pct,
+                    funding_rate,
+                    passed,
+                    missing,
+                    model_version,
                 ),
             )
 
@@ -889,8 +1090,8 @@ def _review_metrics(
     if entry_price == 0:
         return 0.0, 0.0, 0.0
 
-    high = max(prices)
-    low = min(prices)
+    high = max(entry_price, max(prices))
+    low = min(entry_price, min(prices))
     if signal_type in {"pump", "pump_exhaustion", "short_breakdown", "short_long_trap"} or signal_type.startswith("dump_"):
         move_pct = ((entry_price - price_at_review) / entry_price) * 100
         max_favorable_pct = ((entry_price - low) / entry_price) * 100

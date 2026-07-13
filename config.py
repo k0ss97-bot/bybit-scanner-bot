@@ -182,6 +182,8 @@ class Settings:
     dump_bybit_symbol_cache_minutes: int
     dump_evaluation_enabled: bool
     dump_max_evaluation_symbols: int
+    dump_watchlist_snapshot_minutes: int
+    dump_evaluation_snapshot_minutes: int
     dump_trade_max_pages: int
     dump_cross_exchange_required: bool
     dump_cross_exchange_max_age_seconds: int
@@ -346,6 +348,14 @@ def get_settings() -> Settings:
         dump_bybit_symbol_cache_minutes=_int("DUMP_BYBIT_SYMBOL_CACHE_MINUTES", 15),
         dump_evaluation_enabled=_bool("DUMP_EVALUATION_ENABLED", True),
         dump_max_evaluation_symbols=_int("DUMP_MAX_EVALUATION_SYMBOLS", 120),
+        dump_watchlist_snapshot_minutes=max(
+            1,
+            _int("DUMP_WATCHLIST_SNAPSHOT_MINUTES", 30),
+        ),
+        dump_evaluation_snapshot_minutes=max(
+            1,
+            _int("DUMP_EVALUATION_SNAPSHOT_MINUTES", 60),
+        ),
         dump_trade_max_pages=_int("DUMP_TRADE_MAX_PAGES", 5),
         dump_cross_exchange_required=_bool("DUMP_CROSS_EXCHANGE_REQUIRED", True),
         dump_cross_exchange_max_age_seconds=_int("DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS", 300),

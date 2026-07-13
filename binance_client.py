@@ -21,6 +21,7 @@ class BinanceTicker:
     price: float = 0.0
     open_interest: float = 0.0
     funding_rate: float = 0.0
+    funding_rate_available: bool = False
     turnover_24h: float = 0.0
     volume_24h: float = 0.0
     high_price_24h: float = 0.0
@@ -47,9 +48,12 @@ class BinanceClient:
         self.ssl_context = None if verify_ssl else ssl._create_unverified_context()
         self.rate_limit_backoff_seconds = rate_limit_backoff_seconds
         self.max_retries = max_retries
+        self._funding_rates_cache: dict[str, float] = {}
+        self._funding_rates_cache_ts = 0.0
 
     def get_usdt_perp_tickers(self) -> dict[str, BinanceTicker]:
         data = self._get("/fapi/v1/ticker/24hr")
+        funding_rates = self._get_funding_rates()
         tickers = {}
         for item in data:
             symbol = str(item.get("symbol", ""))
@@ -60,12 +64,35 @@ class BinanceClient:
                 price_change_24h_pct=_to_float(item.get("priceChangePercent")),
                 quote_volume_24h=_to_float(item.get("quoteVolume")),
                 price=_to_float(item.get("lastPrice")),
+                funding_rate=funding_rates.get(symbol, 0.0),
+                funding_rate_available=symbol in funding_rates,
                 turnover_24h=_to_float(item.get("quoteVolume")),
                 volume_24h=_to_float(item.get("volume")),
                 high_price_24h=_to_float(item.get("highPrice")),
                 low_price_24h=_to_float(item.get("lowPrice")),
             )
         return tickers
+
+    def _get_funding_rates(self, cache_seconds: int = 60) -> dict[str, float]:
+        now = time.time()
+        if self._funding_rates_cache and now - self._funding_rates_cache_ts < cache_seconds:
+            return dict(self._funding_rates_cache)
+
+        try:
+            data = self._get("/fapi/v1/premiumIndex")
+        except Exception as error:
+            print(f"BINANCE funding unavailable: {error}", flush=True)
+            return {}
+
+        rates = {
+            str(item.get("symbol", "")): _to_float(item.get("lastFundingRate"))
+            for item in data
+            if str(item.get("symbol", "")).endswith("USDT")
+            and item.get("lastFundingRate") not in (None, "")
+        }
+        self._funding_rates_cache = rates
+        self._funding_rates_cache_ts = now
+        return dict(rates)
 
     def get_open_interest(self, symbol: str) -> float:
         data = self._get("/fapi/v1/openInterest", {"symbol": symbol})

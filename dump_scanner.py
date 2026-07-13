@@ -19,6 +19,7 @@ MARKET_EVIDENCE_LOCK = threading.Lock()
 MARKET_EVIDENCE: dict[tuple[str, str], "MarketEvidence"] = {}
 DEEP_CANDIDATES_LOCK = threading.Lock()
 BINANCE_DEEP_CANDIDATES: set[str] = set()
+DUMP_MODEL_VERSION = "dump-v5-data-integrity"
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ class DumpSignal:
     confirmation_oi_change_pct: float
     confirmation_cvd_delta_usdt: float
     timeframes: tuple[DumpTimeframeMetrics, ...] = ()
+    funding_available: bool = True
+    model_version: str = DUMP_MODEL_VERSION
 
 
 @dataclass(frozen=True)
@@ -90,6 +93,7 @@ class DumpWatchlistAlert:
     price_change_window_pct: float
     price: float
     turnover_24h: float
+    model_version: str = DUMP_MODEL_VERSION
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,9 @@ class DumpScanner:
                             missing_checks=watchlist_alert.missing_checks,
                             payload=str(watchlist_alert),
                             ts=now,
+                            cooldown_seconds=(
+                                self.settings.dump_watchlist_snapshot_minutes * 60
+                            ),
                         )
                     watchlist_alerts.append(watchlist_alert)
                 else:
@@ -402,6 +409,10 @@ class DumpScanner:
                 passed_checks=passed_checks,
                 missing_checks=missing_checks,
                 payload=payload,
+                model_version=DUMP_MODEL_VERSION,
+                snapshot_interval_seconds=(
+                    self.settings.dump_evaluation_snapshot_minutes * 60
+                ),
             )
         except Exception as error:
             print(f"{self.source} {ticker.symbol}: evaluation write failed: {error}", flush=True)
@@ -512,11 +523,13 @@ class DumpScanner:
             return None, None
 
         price_growth_lookback_pct, drawdown_from_high_pct, high_price = structure
-        oi_change_pct = pct_change(previous.oi, current.oi)
+        oi_available = previous.oi > 0 and current.oi > 0
+        oi_change_pct = pct_change(previous.oi, current.oi) if oi_available else 0.0
         cvd_delta = current.cvd - previous.cvd
         price_change_window_pct = pct_change(previous.price, current.price)
         turnover_24h = self._turnover(ticker)
-        mode = self._signal_mode(oi_change_pct)
+        funding_available = self._funding_available(ticker)
+        mode = self._signal_mode(oi_change_pct) if oi_available else "UNCONFIRMED_OI"
         evidence = MarketEvidence(
             source=self.source,
             symbol=ticker.symbol,
@@ -539,20 +552,24 @@ class DumpScanner:
             "price_dropping": price_change_window_pct <= -self.settings.dump_min_price_drop_window_pct,
             "sell_cvd": cvd_delta <= -self.settings.dump_min_negative_cvd_delta_usdt,
             "cvd_complete": cvd_complete,
+            "oi_available": oi_available,
             "dump_mode": mode != "UNCONFIRMED_OI",
             "cross_exchange": cross_exchange_ok,
         }
         soft_checks = {
-            "oi_not_collapsed": oi_change_pct >= -self.settings.dump_max_oi_drop_window_pct,
-            "funding_not_positive": current.funding <= self.settings.dump_max_funding_rate,
+            "oi_not_collapsed": not oi_available
+            or oi_change_pct >= -self.settings.dump_max_oi_drop_window_pct,
+            "funding_available": funding_available,
+            "funding_not_positive": not funding_available
+            or current.funding <= self.settings.dump_max_funding_rate,
         }
         signal_score = self._score_signal(
             price_growth_lookback_pct=price_growth_lookback_pct,
             drawdown_from_high_pct=drawdown_from_high_pct,
-            oi_change_pct=oi_change_pct,
+            oi_change_pct=oi_change_pct if oi_available else None,
             cvd_delta=cvd_delta,
             price_change_window_pct=price_change_window_pct,
-            funding_rate=current.funding,
+            funding_rate=current.funding if funding_available else None,
         )
 
         if not all(checks.values()) or signal_score < self.settings.dump_min_signal_score:
@@ -666,6 +683,7 @@ class DumpScanner:
                 oi_change_1h=oi_change_pct,
                 cvd_delta_1h=cvd_delta,
             ),
+            funding_available=funding_available,
         )
         self._record_signal_evaluation(
             now=now,
@@ -682,7 +700,7 @@ class DumpScanner:
             price_change_window_pct=price_change_window_pct,
             funding_rate=current.funding,
             passed_checks=[name for name, passed in {**checks, **soft_checks}.items() if passed],
-            missing_checks=[],
+            missing_checks=[name for name, passed in soft_checks.items() if not passed],
             payload=str(signal),
         )
         return signal, None
@@ -727,10 +745,10 @@ class DumpScanner:
         *,
         price_growth_lookback_pct: float,
         drawdown_from_high_pct: float,
-        oi_change_pct: float,
+        oi_change_pct: float | None,
         cvd_delta: float,
         price_change_window_pct: float,
-        funding_rate: float,
+        funding_rate: float | None,
     ) -> int:
         score = 0
         if price_growth_lookback_pct >= self.settings.dump_min_price_growth_lookback_pct * 2:
@@ -754,12 +772,15 @@ class DumpScanner:
         elif cvd_delta <= -self.settings.dump_min_negative_cvd_delta_usdt:
             score += 1
 
-        if oi_change_pct >= 0:
+        if oi_change_pct is not None and oi_change_pct >= 0:
             score += 2
-        elif oi_change_pct >= -self.settings.dump_max_oi_drop_window_pct:
+        elif (
+            oi_change_pct is not None
+            and oi_change_pct >= -self.settings.dump_max_oi_drop_window_pct
+        ):
             score += 1
 
-        if funding_rate <= self.settings.dump_max_funding_rate:
+        if funding_rate is not None and funding_rate <= self.settings.dump_max_funding_rate:
             score += 1
 
         return min(score, 10)
@@ -936,6 +957,10 @@ class DumpScanner:
 
     def _turnover(self, ticker: Ticker | BinanceTicker) -> float:
         return getattr(ticker, "turnover_24h", 0) or getattr(ticker, "quote_volume_24h", 0)
+
+    @staticmethod
+    def _funding_available(ticker: Ticker | BinanceTicker) -> bool:
+        return bool(getattr(ticker, "funding_rate_available", True))
 
     def _history_symbol(self, symbol: str) -> str:
         return f"{self.source}:{symbol}"

@@ -1,6 +1,9 @@
 from dataclasses import replace
+from contextlib import closing
 from io import BytesIO
+import json
 from pathlib import Path
+import sqlite3
 import tempfile
 import time
 from types import SimpleNamespace
@@ -82,6 +85,31 @@ class FakeBinanceClient(BinanceClient):
             {"a": trade_id, "m": True, "p": "10", "q": "1", "T": trade_id * 10}
             for trade_id in range(start, start + limit)
         ]
+
+
+class FakeBinanceTickerClient(BinanceClient):
+    def __init__(self, funding_error=False):
+        super().__init__(base_url="https://example.invalid")
+        self.funding_error = funding_error
+
+    def _get(self, path, params=None):
+        if path == "/fapi/v1/ticker/24hr":
+            return [
+                {
+                    "symbol": "AAAUSDT",
+                    "priceChangePercent": "-5",
+                    "quoteVolume": "5000000",
+                    "lastPrice": "10",
+                    "volume": "500000",
+                    "highPrice": "12",
+                    "lowPrice": "9",
+                }
+            ]
+        if path == "/fapi/v1/premiumIndex":
+            if self.funding_error:
+                raise RuntimeError("funding endpoint unavailable")
+            return [{"symbol": "AAAUSDT", "lastFundingRate": "-0.00025"}]
+        raise AssertionError(f"unexpected path: {path}")
 
 
 class FakeChartClient:
@@ -194,6 +222,45 @@ class DumpPipelineTests(unittest.TestCase):
         self.assertEqual([trade.exec_id for trade in batch.trades], ["101", "102", "103", "104", "105", "106"])
         self.assertFalse(batch.complete)
 
+    def test_binance_tickers_include_bulk_funding(self):
+        ticker = FakeBinanceTickerClient().get_usdt_perp_tickers()["AAAUSDT"]
+        self.assertTrue(ticker.funding_rate_available)
+        self.assertAlmostEqual(ticker.funding_rate, -0.00025)
+
+    def test_stale_funding_is_not_treated_as_available(self):
+        client = FakeBinanceTickerClient(funding_error=True)
+        client._funding_rates_cache = {"AAAUSDT": -0.001}
+        client._funding_rates_cache_ts = 0
+        ticker = client.get_usdt_perp_tickers()["AAAUSDT"]
+        self.assertFalse(ticker.funding_rate_available)
+        self.assertEqual(ticker.funding_rate, 0)
+
+    def test_missing_funding_does_not_add_signal_score(self):
+        scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
+        metrics = {
+            "price_growth_lookback_pct": self.settings.dump_min_price_growth_lookback_pct,
+            "drawdown_from_high_pct": -self.settings.dump_min_drawdown_from_high_pct,
+            "oi_change_pct": -1,
+            "cvd_delta": -self.settings.dump_min_negative_cvd_delta_usdt,
+            "price_change_window_pct": -self.settings.dump_min_price_drop_window_pct,
+        }
+        without_funding = scanner._score_signal(**metrics, funding_rate=None)
+        with_funding = scanner._score_signal(**metrics, funding_rate=0)
+        self.assertEqual(with_funding, without_funding + 1)
+
+    def test_missing_open_interest_does_not_add_signal_score(self):
+        scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
+        metrics = {
+            "price_growth_lookback_pct": self.settings.dump_min_price_growth_lookback_pct,
+            "drawdown_from_high_pct": -self.settings.dump_min_drawdown_from_high_pct,
+            "cvd_delta": -self.settings.dump_min_negative_cvd_delta_usdt,
+            "price_change_window_pct": -self.settings.dump_min_price_drop_window_pct,
+            "funding_rate": None,
+        }
+        without_oi = scanner._score_signal(**metrics, oi_change_pct=None)
+        with_flat_oi = scanner._score_signal(**metrics, oi_change_pct=0)
+        self.assertEqual(with_flat_oi, without_oi + 2)
+
     def test_dump_modes_are_separate(self):
         scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
         self.assertEqual(scanner._signal_mode(-2.0), "LIQUIDATION_FLUSH")
@@ -246,6 +313,7 @@ class DumpPipelineTests(unittest.TestCase):
             quote_volume_24h=5_000_000,
             price=9.9,
             funding_rate=0,
+            funding_rate_available=True,
             high_price_24h=10.5,
         )
         state = SymbolState(
@@ -260,6 +328,36 @@ class DumpPipelineTests(unittest.TestCase):
         self.assertEqual(signal.source, "BINANCE+BYBIT")
         self.assertEqual(signal.mode, "SHORT_TREND")
         self.assertEqual([item.label for item in signal.timeframes], ["1H", "4H", "1D"])
+
+    def test_signal_is_blocked_when_open_interest_is_missing(self):
+        MARKET_EVIDENCE.clear()
+        SYMBOL_ALERTS.clear()
+        bybit_scanner = DumpScanner("BYBIT", object(), StateStore("unused.json"), self.settings)
+        bybit_scanner._publish_and_get_partner(
+            MarketEvidence("BYBIT", "AAAUSDT", 10_000, "SHORT_TREND", -1.0, 0.2, -2_000, True)
+        )
+        scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
+        scanner._get_dump_structure = lambda symbol, price: (20.0, -5.0, 10.5)
+        ticker = BinanceTicker(
+            symbol="AAAUSDT",
+            price_change_24h_pct=-5,
+            quote_volume_24h=5_000_000,
+            price=9.9,
+            funding_rate=0,
+            funding_rate_available=True,
+            high_price_24h=10.5,
+        )
+        state = SymbolState(
+            cumulative_cvd=-10_000,
+            snapshots=[
+                Snapshot(6_400, 0, 0, 10, 0, 5_000_000, cvd_generation=0),
+                Snapshot(10_000, 0, -10_000, 9.9, 0, 5_000_000, cvd_generation=0),
+            ],
+        )
+        reasons = {}
+        signal, _ = scanner._build_signal(10_000, ticker, state, reasons, 1, True)
+        self.assertIsNone(signal)
+        self.assertEqual(reasons["oi_available"], 1)
 
     def test_multitimeframe_metrics_use_hourly_binance_history(self):
         scanner = DumpScanner(
@@ -331,6 +429,28 @@ class DumpPipelineTests(unittest.TestCase):
         self.assertNotIn("15m", caption)
         self.assertLess(len(caption), 800)
 
+    def test_dump_caption_marks_missing_funding(self):
+        signal = SimpleNamespace(
+            symbol="AAAUSDT",
+            source="BINANCE+BYBIT",
+            mode="SHORT_TREND",
+            signal_score=7,
+            lookback_days=2,
+            price_growth_lookback_pct=20,
+            drawdown_from_high_pct=-8,
+            funding_rate=0,
+            funding_available=False,
+            price=100,
+            high_price=110,
+            turnover_24h=5_000_000,
+            confirmation_source="BYBIT",
+            confirmation_price_change_pct=-1,
+            confirmation_oi_change_pct=0.5,
+            confirmation_cvd_delta_usdt=-20_000,
+            timeframes=(),
+        )
+        self.assertIn("Funding: нет данных", format_dump_signal(signal))
+
     def test_signal_reviews_use_15_30_60_240_minute_horizons(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
@@ -358,6 +478,118 @@ class DumpPipelineTests(unittest.TestCase):
             self.assertEqual(reviewed, 4)
             horizons = [row[1] for row in history.get_signal_stats()]
             self.assertEqual(horizons, [15, 30, 60, 240])
+
+    def test_signal_review_uses_entry_as_metric_baseline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            signal_ts = 10_000
+            signal_id = history.record_signal(
+                signal_type="dump_binance",
+                symbol="BINANCE:AAAUSDT",
+                ts=signal_ts,
+                price=100,
+                open_interest_change_pct=1,
+                futures_cvd_change_pct=0,
+                futures_cvd_delta_usdt=-10_000,
+                spot_cvd_change_pct=0,
+                spot_cvd_delta_usdt=0,
+                price_change_pct=-1,
+                payload="test",
+            )
+            history.record_pending_signal_prices(
+                signal_type="dump_binance",
+                prices={"AAAUSDT": 95},
+                ts=signal_ts + 15 * 60,
+            )
+            history.update_signal_reviews(now=signal_ts + 15 * 60)
+            with closing(sqlite3.connect(history.path)) as conn:
+                favorable, adverse = conn.execute(
+                    """
+                    SELECT max_favorable_pct, max_adverse_pct
+                    FROM signal_reviews
+                    WHERE signal_id = ? AND horizon_minutes = 15
+                    """,
+                    (signal_id,),
+                ).fetchone()
+            self.assertAlmostEqual(favorable, 5)
+            self.assertEqual(adverse, 0)
+
+    def test_watchlist_keeps_one_best_candidate_per_bucket(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            common = {
+                "scanner": "dump_binance",
+                "symbol": "AAAUSDT",
+                "price": 100,
+                "passed_checks": ["volume"],
+                "missing_checks": ["sell_cvd"],
+                "payload": "candidate",
+                "cooldown_seconds": 1_800,
+            }
+            self.assertTrue(history.record_watchlist_candidate(**common, score=4, ts=1_000))
+            self.assertFalse(history.record_watchlist_candidate(**common, score=4, ts=1_100))
+            self.assertTrue(history.record_watchlist_candidate(**common, score=6, ts=1_200))
+            self.assertTrue(history.record_watchlist_candidate(**common, score=5, ts=1_900))
+            rows = history.get_recent_watchlist_candidates(limit=10)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(sorted(row[3] for row in rows), [5, 6])
+
+    def test_evaluation_history_keeps_hourly_best_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            common = {
+                "scanner": "dump_binance",
+                "source": "BINANCE",
+                "symbol": "AAAUSDT",
+                "source_rank": 80,
+                "price": 100,
+                "turnover_24h": 5_000_000,
+                "model_version": "dump-test-v1",
+                "snapshot_interval_seconds": 3_600,
+            }
+            history.record_scanner_evaluation(
+                **common,
+                ts=1_000,
+                selected=False,
+                status="outside_top_symbols",
+                reason="outside_top_symbols",
+                score=0,
+            )
+            history.record_scanner_evaluation(
+                **common,
+                ts=1_100,
+                selected=True,
+                status="watchlist",
+                reason="sell_cvd",
+                score=6,
+            )
+            history.record_scanner_evaluation(
+                **common,
+                ts=1_200,
+                selected=True,
+                status="rejected",
+                reason="sell_cvd",
+                score=5,
+            )
+            history.record_scanner_evaluation(
+                **common,
+                ts=3_700,
+                selected=False,
+                status="outside_top_symbols",
+                reason="outside_top_symbols",
+                score=0,
+            )
+            with closing(sqlite3.connect(history.path)) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT bucket_ts, status, score, model_version
+                    FROM scanner_evaluation_history
+                    ORDER BY bucket_ts
+                    """
+                ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0], (0, "watchlist", 6, "dump-test-v1"))
+            self.assertEqual(rows[1][0], 3_600)
 
     def test_telegram_cooldown_can_be_released_after_failed_send(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -387,6 +619,7 @@ class DumpPipelineTests(unittest.TestCase):
             price_change_window_pct=-1,
             mode="SHORT_TREND",
             signal_score=8,
+            model_version="dump-test-v1",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
@@ -411,6 +644,15 @@ class DumpPipelineTests(unittest.TestCase):
             )
             self.assertTrue(sent)
             self.assertEqual(len(history.get_recent_signals()), 1)
+            with closing(sqlite3.connect(history.path)) as conn:
+                model_version, settings_snapshot = conn.execute(
+                    "SELECT model_version, settings_snapshot FROM signals"
+                ).fetchone()
+            snapshot = json.loads(settings_snapshot)
+            self.assertEqual(model_version, "dump-test-v1")
+            self.assertEqual(snapshot["dump_max_symbols"], 100)
+            self.assertNotIn("openai_api_key", snapshot)
+            self.assertNotIn("telegram_bot_token", snapshot)
 
     def test_chart_and_statistics_are_sent_as_one_message(self):
         signal = SimpleNamespace(

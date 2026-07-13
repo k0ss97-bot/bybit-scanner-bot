@@ -165,6 +165,11 @@ def format_dump_signal(signal: DumpSignal) -> str:
         "SHORT_TREND": "Продолжение шорт-тренда",
     }.get(signal.mode, signal.mode)
     timeframe_lines = _dump_timeframe_lines(signal)
+    funding_line = (
+        f"Funding: {signal.funding_rate * 100:.4f}%\n"
+        if getattr(signal, "funding_available", True)
+        else "Funding: нет данных\n"
+    )
     confirmation_block = ""
     if signal.confirmation_source:
         confirmation_block = (
@@ -180,7 +185,7 @@ def format_dump_signal(signal: DumpSignal) -> str:
         f"{timeframe_lines}\n\n"
         f"Рост за {signal.lookback_days}d: {signal.price_growth_lookback_pct:+.2f}%\n"
         f"Откат от high: {signal.drawdown_from_high_pct:+.2f}%\n"
-        f"Funding: {signal.funding_rate * 100:.4f}%\n"
+        f"{funding_line}"
         f"Цена: {signal.price:g} | high: {signal.high_price:g}\n"
         f"Оборот 24h: {_compact_usdt(signal.turnover_24h)}\n"
         f"{confirmation_block}"

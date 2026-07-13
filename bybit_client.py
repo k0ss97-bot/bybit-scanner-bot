@@ -24,6 +24,7 @@ class Ticker:
     high_price_24h: float
     low_price_24h: float
     price_change_24h_pct: float
+    funding_rate_available: bool = True
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,7 @@ class BybitClient:
                     high_price_24h=_to_float(item.get("highPrice24h")),
                     low_price_24h=_to_float(item.get("lowPrice24h")),
                     price_change_24h_pct=_to_float(item.get("price24hPcnt")) * 100,
+                    funding_rate_available=item.get("fundingRate") not in (None, ""),
                 )
             )
         return tickers

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -27,6 +28,37 @@ SCANNER_PAUSED = {scanner: False for scanner in SCANNERS}
 WARNING_LOCK = threading.Lock()
 LAST_WARNING_TS: dict[str, int] = {}
 STOP_EVENT = threading.Event()
+DUMP_SETTINGS_SNAPSHOT_FIELDS = (
+    "dump_window_minutes",
+    "dump_lookback_days",
+    "dump_scan_interval_seconds",
+    "dump_min_turnover_24h_usdt",
+    "dump_max_symbols",
+    "dump_deep_max_symbols",
+    "dump_require_bybit_listing",
+    "dump_cross_exchange_required",
+    "dump_cross_exchange_max_age_seconds",
+    "dump_liquidation_min_oi_drop_pct",
+    "dump_trend_min_oi_change_pct",
+    "dump_min_price_growth_lookback_pct",
+    "dump_min_drawdown_from_high_pct",
+    "dump_min_price_drop_window_pct",
+    "dump_min_negative_cvd_delta_usdt",
+    "dump_max_oi_drop_window_pct",
+    "dump_max_funding_rate",
+    "dump_min_signal_score",
+    "dump_consecutive_checks",
+    "dump_symbol_cooldown_minutes",
+    "telegram_symbol_cooldown_minutes",
+)
+
+
+def dump_settings_snapshot(settings) -> str:
+    values = {
+        name: getattr(settings, name)
+        for name in DUMP_SETTINGS_SNAPSHOT_FIELDS
+    }
+    return json.dumps(values, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def menu_keyboard() -> dict:
@@ -213,6 +245,8 @@ def send_signal_with_symbol_cooldown(
         spot_cvd_delta_usdt=0,
         price_change_pct=signal.price_change_window_pct,
         payload=str(signal),
+        model_version=str(getattr(signal, "model_version", "")),
+        settings_snapshot=dump_settings_snapshot(settings),
     )
 
     if ai_analyzer is not None and ai_analyzer.enabled and message_id is not None:
@@ -453,6 +487,8 @@ def format_settings_message(settings) -> str:
         f"DUMP_BYBIT_SYMBOL_CACHE_MINUTES={settings.dump_bybit_symbol_cache_minutes}\n"
         f"DUMP_EVALUATION_ENABLED={str(settings.dump_evaluation_enabled).lower()}\n"
         f"DUMP_MAX_EVALUATION_SYMBOLS={settings.dump_max_evaluation_symbols}\n"
+        f"DUMP_WATCHLIST_SNAPSHOT_MINUTES={settings.dump_watchlist_snapshot_minutes}\n"
+        f"DUMP_EVALUATION_SNAPSHOT_MINUTES={settings.dump_evaluation_snapshot_minutes}\n"
         f"DUMP_TRADE_MAX_PAGES={settings.dump_trade_max_pages}\n"
         f"DUMP_CROSS_EXCHANGE_REQUIRED={str(settings.dump_cross_exchange_required).lower()}\n"
         f"DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS={settings.dump_cross_exchange_max_age_seconds}\n"
