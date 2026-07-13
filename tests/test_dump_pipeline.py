@@ -30,10 +30,12 @@ class FakeNotifier:
     def __init__(self, fail=False):
         self.fail = fail
         self.photos = []
+        self.messages = []
 
     def send_message(self, text, reply_markup=None):
         if self.fail:
             raise RuntimeError("send failed")
+        self.messages.append(text)
 
     def send_photo(self, photo, caption=""):
         if self.fail:
@@ -277,7 +279,7 @@ class DumpPipelineTests(unittest.TestCase):
             self.assertTrue(sent)
             self.assertEqual(len(history.get_recent_signals()), 1)
 
-    def test_chart_is_sent_after_successful_text_signal(self):
+    def test_chart_and_statistics_are_sent_as_one_message(self):
         signal = SimpleNamespace(
             symbol="AAAUSDT",
             price=100,
@@ -301,6 +303,34 @@ class DumpPipelineTests(unittest.TestCase):
             )
             self.assertTrue(sent)
             self.assertEqual(notifier.photos[0][0], b"png-bytes")
+            self.assertEqual(notifier.photos[0][1], "signal")
+            self.assertEqual(notifier.messages, [])
+
+    def test_chart_failure_falls_back_to_one_text_message(self):
+        signal = SimpleNamespace(
+            symbol="AAAUSDT",
+            price=100,
+            oi_change_pct=1,
+            cvd_delta_usdt=-10_000,
+            price_change_window_pct=-1,
+            mode="SHORT_TREND",
+            signal_score=8,
+        )
+        notifier = FakeNotifier()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            sent = send_signal_with_symbol_cooldown(
+                notifier=notifier,
+                history=history,
+                settings=self.settings,
+                signal=signal,
+                signal_type="dump_binance",
+                formatter=lambda _: "signal",
+                chart_renderer=lambda _: (_ for _ in ()).throw(RuntimeError("chart failed")),
+            )
+            self.assertTrue(sent)
+            self.assertEqual(notifier.photos, [])
+            self.assertEqual(notifier.messages, ["signal"])
 
     def test_chart_renderer_creates_1200x900_png(self):
         try:

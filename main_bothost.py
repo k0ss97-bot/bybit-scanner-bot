@@ -112,7 +112,19 @@ def send_signal_with_symbol_cooldown(
         )
         return False
 
-    if not safe_send_message(notifier, formatter(signal)):
+    message = formatter(signal)
+    sent = False
+    if chart_renderer is not None and settings.dump_chart_enabled:
+        try:
+            chart = chart_renderer(signal)
+            sent = safe_send_photo(notifier, chart, message)
+        except Exception as error:
+            print(f"Chart render failed for {symbol}: {error}", flush=True)
+
+    if not sent:
+        sent = safe_send_message(notifier, message)
+
+    if not sent:
         history.release_telegram_symbol_alert(symbol=symbol, ts=now)
         history.release_dump_symbol_alert(
             symbol=symbol,
@@ -134,21 +146,6 @@ def send_signal_with_symbol_cooldown(
         price_change_pct=signal.price_change_window_pct,
         payload=str(signal),
     )
-
-    if chart_renderer is not None and settings.dump_chart_enabled:
-        try:
-            chart = chart_renderer(signal)
-            mode_title = {
-                "LIQUIDATION_FLUSH": "Liquidation flush",
-                "SHORT_TREND": "Short trend",
-            }.get(signal.mode, signal.mode)
-            safe_send_photo(
-                notifier,
-                chart,
-                f"{signal.symbol} | {mode_title} | score {signal.signal_score}/10",
-            )
-        except Exception as error:
-            print(f"Chart render failed for {symbol}: {error}", flush=True)
     return True
 
 
