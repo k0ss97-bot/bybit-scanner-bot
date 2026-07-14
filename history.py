@@ -1247,6 +1247,24 @@ class HistoryStore:
                 params,
             ).fetchall()
 
+    def get_signal_inventory(self) -> list[tuple]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    CASE
+                        WHEN model_version = '' THEN 'legacy'
+                        ELSE model_version
+                    END AS version,
+                    COUNT(*) AS total,
+                    MIN(ts) AS first_ts,
+                    MAX(ts) AS last_ts
+                FROM signals
+                GROUP BY version
+                ORDER BY last_ts DESC
+                """
+            ).fetchall()
+
     def get_review_quality(self, model_version: str | None = None) -> list[tuple]:
         where = ""
         params: tuple[object, ...] = ()

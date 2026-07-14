@@ -26,7 +26,11 @@ from dump_scanner import (
     MarketEvidence,
 )
 from history import HistoryStore
-from main_bothost import enrich_telegram_signal, send_signal_with_symbol_cooldown
+from main_bothost import (
+    enrich_telegram_signal,
+    format_stats_message,
+    send_signal_with_symbol_cooldown,
+)
 from state import Snapshot, StateStore, SymbolState
 from telegram import TelegramNotifier, TelegramPollingConflictError, format_dump_signal
 
@@ -1241,6 +1245,28 @@ class DumpPipelineTests(unittest.TestCase):
             self.assertTrue(
                 history.claim_app_event("warning", ts=160, cooldown_seconds=60)
             )
+
+    def test_stats_explains_when_only_archived_model_signals_exist(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = HistoryStore(str(Path(tmpdir) / "scanner.db"))
+            history.record_signal(
+                signal_type="dump_binance",
+                symbol="BINANCE:AAAUSDT",
+                ts=int(time.time()) - 3600,
+                price=100,
+                open_interest_change_pct=1,
+                futures_cvd_change_pct=0,
+                futures_cvd_delta_usdt=-10_000,
+                spot_cvd_change_pct=0,
+                spot_cvd_delta_usdt=0,
+                price_change_pct=-1,
+                payload="test",
+                model_version="dump-v5-data-integrity",
+            )
+            message = format_stats_message(history, self.settings)
+            self.assertIn("Сигналов текущей версии в базе: 0", message)
+            self.assertIn("dump-v5-data-integrity: сигналов=1", message)
+            self.assertIn("в результат текущей модели не смешивается", message)
 
 
 if __name__ == "__main__":

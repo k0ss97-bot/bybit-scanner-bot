@@ -743,15 +743,24 @@ def format_settings_message(settings) -> str:
 
 
 def format_stats_message(history: HistoryStore, settings) -> str:
+    now = int(time.time())
     reviewed = history.update_signal_reviews(
         max_lag_seconds=settings.dump_review_max_lag_seconds,
     )
     rows = history.get_signal_stats(model_version=DUMP_MODEL_VERSION)
+    inventory = history.get_signal_inventory()
     quality = history.get_review_quality(model_version=DUMP_MODEL_VERSION)
     entry_scenarios = history.get_entry_scenario_stats(model_version=DUMP_MODEL_VERSION)
     recent = history.get_recent_signals(limit=5, model_version=DUMP_MODEL_VERSION)
+    current_inventory = next(
+        (item for item in inventory if item[0] == DUMP_MODEL_VERSION),
+        None,
+    )
+    current_signal_count = int(current_inventory[1]) if current_inventory else 0
+    archived_inventory = [item for item in inventory if item[0] != DUMP_MODEL_VERSION]
 
     lines = [f"Статистика сигналов {DUMP_MODEL_VERSION}:"]
+    lines.append(f"Сигналов текущей версии в базе: {current_signal_count}")
     if reviewed:
         lines.append(f"Новых расчетов результата: {reviewed}")
 
@@ -774,8 +783,21 @@ def format_stats_message(history: HistoryStore, settings) -> str:
                 f"лучшее={avg_max_favorable_pct:+.2f}%, "
                 f"просадка={avg_max_adverse_pct:+.2f}%"
             )
+    elif current_signal_count:
+        latest_signal_ts = int(current_inventory[3])
+        age_minutes = max(0, int((now - latest_signal_ts) / 60))
+        if age_minutes < 15:
+            lines.append(
+                f"Результатов пока нет: последний сигнал был {age_minutes} мин назад. "
+                "Первый расчет появится после 15 минут."
+            )
+        else:
+            lines.append(
+                "Сигналы есть, но точных результатов пока нет. "
+                "Бот ждёт свежую котировку Bybit для горизонтов 15/30/60/240 минут."
+            )
     else:
-        lines.append("Пока нет рассчитанных результатов. Нужно дождаться 15/30/60/240 минут после сигналов.")
+        lines.append("Текущая версия еще не отправляла сигналов, поэтому результатов нет.")
 
     if quality:
         quality_parts = []
@@ -798,12 +820,22 @@ def format_stats_message(history: HistoryStore, settings) -> str:
                 f"спред={avg_spread_bps:.1f} bps"
             )
 
+    if archived_inventory:
+        lines.append("\nАрхив других версий (в результат текущей модели не смешивается):")
+        for version, total, _first_ts, last_ts in archived_inventory[:5]:
+            age_hours = max(0, int((now - int(last_ts)) / 3600))
+            lines.append(f"{version}: сигналов={total}, последний {age_hours}ч назад")
+    elif not inventory:
+        lines.append(
+            "\nБаза сигналов полностью пустая. Если сигналы были до перезапуска, "
+            "нужно проверить постоянное хранилище DATA_DIR на Bothost."
+        )
+
     lines.append("\nПоследние сигналы:")
     if not recent:
         lines.append("Пока нет сигналов.")
         return "\n".join(lines)
 
-    now = int(time.time())
     for signal_id, signal_type, symbol, ts, price, price_change_pct in recent:
         age_minutes = int((now - ts) / 60)
         lines.append(
