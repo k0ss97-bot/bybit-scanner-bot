@@ -20,6 +20,7 @@ from openai_analysis import OpenAISignalAnalyzer, compose_enriched_caption
 from state import StateStore
 from telegram import (
     TelegramNotifier,
+    TelegramPollingConflictError,
     format_dump_signal,
 )
 
@@ -27,9 +28,18 @@ STATUS_LOCK = threading.Lock()
 SCANNER_STATUS: dict[str, dict[str, object]] = {}
 SCANNERS = ("DUMP BYBIT", "DUMP BINANCE")
 SCANNER_PAUSED = {scanner: False for scanner in SCANNERS}
+PAUSE_LOCK = threading.Lock()
+COMMAND_STATUS_LOCK = threading.Lock()
+COMMAND_STATUS: dict[str, object] = {
+    "stage": "starting",
+    "updated_ts": int(time.time()),
+    "error": "",
+}
 WARNING_LOCK = threading.Lock()
 LAST_WARNING_TS: dict[str, int] = {}
 STOP_EVENT = threading.Event()
+TELEGRAM_OFFSET_META_KEY = "telegram_command_update_offset"
+SCANNERS_PAUSED_META_KEY = "dump_scanners_paused"
 DUMP_SETTINGS_SNAPSHOT_FIELDS = (
     "dump_window_minutes",
     "dump_lookback_days",
@@ -534,13 +544,34 @@ def update_paused_status(scanner: str) -> None:
         }
 
 
+def update_command_status(stage: str, error: str = "") -> None:
+    with COMMAND_STATUS_LOCK:
+        COMMAND_STATUS.update(
+            {
+                "stage": stage,
+                "updated_ts": int(time.time()),
+                "error": error[:300],
+            }
+        )
+
+
 def is_paused(scanner: str) -> bool:
-    return bool(SCANNER_PAUSED.get(scanner, False))
+    with PAUSE_LOCK:
+        return bool(SCANNER_PAUSED.get(scanner, False))
 
 
-def set_paused(value: bool) -> None:
-    for scanner in SCANNER_PAUSED:
-        SCANNER_PAUSED[scanner] = value
+def set_paused(value: bool, history: HistoryStore | None = None) -> None:
+    with PAUSE_LOCK:
+        for scanner in SCANNER_PAUSED:
+            SCANNER_PAUSED[scanner] = value
+    if history is not None:
+        history.set_app_meta(SCANNERS_PAUSED_META_KEY, "true" if value else "false")
+
+
+def load_persistent_pause(history: HistoryStore) -> bool:
+    paused = history.get_app_meta(SCANNERS_PAUSED_META_KEY, "false").lower() == "true"
+    set_paused(paused)
+    return paused
 
 
 def format_closest_alerts(alerts, limit: int = 5) -> list[str]:
@@ -567,12 +598,29 @@ def format_closest_alerts(alerts, limit: int = 5) -> list[str]:
 def format_status_message() -> str:
     with STATUS_LOCK:
         snapshot = dict(SCANNER_STATUS)
-
-    if not snapshot:
-        return "Бот работает, но скан еще не завершался."
+    with COMMAND_STATUS_LOCK:
+        command_status = dict(COMMAND_STATUS)
 
     lines = ["Статус сканера:"]
     now = int(time.time())
+    command_stage = str(command_status.get("stage", "unknown"))
+    command_age = max(0, now - int(command_status.get("updated_ts", now)))
+    if command_stage == "conflict":
+        lines.append(
+            "Команды Telegram: конфликт второго экземпляра бота. "
+            "Останови старый запуск с этим же токеном."
+        )
+    elif command_stage == "error":
+        lines.append(
+            f"Команды Telegram: ошибка {str(command_status.get('error', ''))[:120]}"
+        )
+    elif command_stage == "disabled":
+        lines.append("Команды Telegram: отключены настройкой.")
+    else:
+        lines.append(f"Команды Telegram: работают, проверка {command_age}s назад.")
+    if not snapshot:
+        lines.append("Скан еще не завершался.")
+        return "\n".join(lines)
     for scanner in SCANNERS:
         data = snapshot.get(scanner)
         if not data:
@@ -1025,24 +1073,65 @@ def maybe_send_rate_warning(
     )
 
 
+def should_emit_runtime_event(
+    history: HistoryStore,
+    key: str,
+    *,
+    cooldown_seconds: int,
+) -> bool:
+    try:
+        return history.claim_app_event(
+            key,
+            ts=int(time.time()),
+            cooldown_seconds=cooldown_seconds,
+        )
+    except Exception as error:
+        print(f"Runtime event state failed for {key}: {error}", flush=True)
+        return True
+
+
 def run_status_loop() -> None:
     settings = get_settings()
     if not settings.status_commands_enabled:
+        update_command_status("disabled")
+        print("Telegram command loop disabled by STATUS_COMMANDS_ENABLED=false", flush=True)
         return
 
     notifier = build_notifier(settings)
-    ai_analyzer = build_openai_analyzer(settings)
     history = HistoryStore(data_path("scanner.db"))
-    offset = None
+    if not notifier.enabled:
+        update_command_status("error", "Telegram token or chat ID is missing")
+        print("Telegram command loop cannot start: token or chat ID is missing", flush=True)
+        return
+
+    ai_analyzer = build_openai_analyzer(settings)
+    raw_offset = history.get_app_meta(TELEGRAM_OFFSET_META_KEY, "")
+    try:
+        offset = int(raw_offset) if raw_offset else None
+    except ValueError:
+        offset = None
+
+    polling_prepared = False
+    update_command_status("starting")
+    print(f"Telegram command loop starting: offset={offset}", flush=True)
     while not STOP_EVENT.is_set():
         try:
-            for update in notifier.get_updates(offset=offset, timeout_seconds=20):
-                offset = int(update["update_id"]) + 1
+            if not polling_prepared:
+                notifier.prepare_long_polling()
+                polling_prepared = True
+                print("Telegram command loop ready: webhook disabled, polling active", flush=True)
+
+            updates = notifier.get_updates(offset=offset, timeout_seconds=20)
+            update_command_status("ready")
+            for update in updates:
+                next_offset = int(update["update_id"]) + 1
                 message = update.get("message") or {}
                 text = str(message.get("text") or "").strip().lower()
                 chat = message.get("chat") or {}
                 chat_id = str(chat.get("id") or "")
                 if chat_id != str(settings.telegram_chat_id):
+                    offset = next_offset
+                    history.set_app_meta(TELEGRAM_OFFSET_META_KEY, str(offset))
                     continue
                 target = status_target(text)
                 why_target = rejection_target(text)
@@ -1079,10 +1168,10 @@ def run_status_loop() -> None:
                 elif is_closest_request(text):
                     safe_send_message(notifier, format_closest_message(history), menu_keyboard())
                 elif is_pause_request(text):
-                    set_paused(True)
+                    set_paused(True, history)
                     safe_send_message(notifier, "Сканеры поставлены на паузу.", menu_keyboard())
                 elif is_start_request(text):
-                    set_paused(False)
+                    set_paused(False, history)
                     safe_send_message(notifier, "Сканеры снова работают.", menu_keyboard())
                 elif is_openai_test_request(text):
                     schedule_openai_test(notifier, ai_analyzer)
@@ -1098,8 +1187,40 @@ def run_status_loop() -> None:
                         "Не понял команду. Выбери действие кнопкой ниже.",
                         menu_keyboard(),
                     )
+                offset = next_offset
+                history.set_app_meta(TELEGRAM_OFFSET_META_KEY, str(offset))
+        except TelegramPollingConflictError as error:
+            update_command_status("conflict", str(error))
+            if should_emit_runtime_event(
+                history,
+                "telegram_command_conflict_notice_ts",
+                cooldown_seconds=1800,
+            ):
+                print(
+                    "Telegram command conflict: another bot instance uses getUpdates. "
+                    "Stop the old instance that uses the same token.",
+                    flush=True,
+                )
+                safe_send_message(
+                    notifier,
+                    "⚠️ Команды временно не работают: этот же Telegram-токен "
+                    "одновременно использует другой экземпляр бота. Останови старый "
+                    "запуск на другом сервере или компьютере, затем перезапусти бот.",
+                )
         except Exception as error:
-            if "timed out" not in str(error).lower():
+            error_text = str(error)
+            if "timed out" in error_text.lower():
+                update_command_status("ready")
+            else:
+                update_command_status("error", error_text)
+            if (
+                "timed out" not in error_text.lower()
+                and should_emit_runtime_event(
+                    history,
+                    "telegram_command_error_log_ts",
+                    cooldown_seconds=300,
+                )
+            ):
                 print(f"Status command loop error: {error}", flush=True)
 
         wait_or_stop(settings.status_poll_interval_seconds)
@@ -1209,6 +1330,8 @@ def run_dump_loop(source: str) -> None:
 def main() -> None:
     install_signal_handlers()
     settings = get_settings()
+    runtime_history = HistoryStore(data_path("scanner.db"))
+    persistent_pause = load_persistent_pause(runtime_history)
     settings_snapshot = dump_settings_snapshot(settings)
     print(
         "Config check: "
@@ -1220,7 +1343,8 @@ def main() -> None:
         f"model={DUMP_MODEL_VERSION}, "
         f"build={build_commit()[:12]}, "
         f"schema={HISTORY_SCHEMA_VERSION}, "
-        f"config={dump_config_hash(settings_snapshot)}",
+        f"config={dump_config_hash(settings_snapshot)}, "
+        f"paused={persistent_pause}",
         flush=True,
     )
     dump_bybit_thread = threading.Thread(
@@ -1243,15 +1367,31 @@ def main() -> None:
     for thread in worker_threads:
         thread.start()
     status_thread.start()
+    status_restart_after = 0.0
 
     while not STOP_EVENT.is_set():
         if not any(thread.is_alive() for thread in worker_threads):
             print("All scanner threads stopped.", flush=True)
             break
+        if (
+            settings.status_commands_enabled
+            and not status_thread.is_alive()
+            and time.monotonic() >= status_restart_after
+        ):
+            print("Telegram command loop stopped; restarting it.", flush=True)
+            update_command_status("restarting")
+            status_thread = threading.Thread(
+                target=run_status_loop,
+                name="status-commands",
+                daemon=True,
+            )
+            status_thread.start()
+            status_restart_after = time.monotonic() + 30
         wait_or_stop(1)
 
     for thread in worker_threads:
         thread.join(timeout=5)
+    status_thread.join(timeout=5)
     print("Bot stopped.", flush=True)
 
 

@@ -531,6 +531,48 @@ class HistoryStore:
 
         return deleted
 
+    def get_app_meta(self, key: str, default: str = "") -> str:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key = ?",
+                (key,),
+            ).fetchone()
+        return str(row[0]) if row is not None else default
+
+    def set_app_meta(self, key: str, value: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, value),
+            )
+
+    def claim_app_event(self, key: str, *, ts: int, cooldown_seconds: int) -> bool:
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key = ?",
+                (key,),
+            ).fetchone()
+            try:
+                previous_ts = int(row[0]) if row is not None else 0
+            except (TypeError, ValueError):
+                previous_ts = 0
+            if ts - previous_ts < max(0, cooldown_seconds):
+                return False
+            conn.execute(
+                """
+                INSERT INTO app_meta (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (key, str(ts)),
+            )
+            return True
+
     def record_snapshot(
         self,
         *,

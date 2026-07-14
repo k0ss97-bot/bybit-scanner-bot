@@ -9,6 +9,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from bybit_client import BybitClient, Kline, OrderbookQuote, Ticker, Trade
 from binance_client import BinanceClient, BinanceTicker, OpenInterestPoint
@@ -27,7 +28,7 @@ from dump_scanner import (
 from history import HistoryStore
 from main_bothost import enrich_telegram_signal, send_signal_with_symbol_cooldown
 from state import Snapshot, StateStore, SymbolState
-from telegram import TelegramNotifier, format_dump_signal
+from telegram import TelegramNotifier, TelegramPollingConflictError, format_dump_signal
 
 
 class FakeBybitClient(BybitClient):
@@ -1200,6 +1201,46 @@ class DumpPipelineTests(unittest.TestCase):
         self.assertTrue(request.full_url.endswith("/sendPhoto"))
         self.assertIn(b'name="photo"', request.data)
         self.assertIn(b"png-bytes", request.data)
+
+    def test_telegram_polling_disables_webhook_without_dropping_commands(self):
+        notifier = TelegramNotifier("token", "chat-id")
+        with patch("telegram.urlopen", return_value=FakeHttpResponse()) as mocked:
+            notifier.prepare_long_polling()
+        request = mocked.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/deleteWebhook"))
+        self.assertEqual(
+            json.loads(request.data.decode("utf-8")),
+            {"drop_pending_updates": False},
+        )
+
+    def test_telegram_get_updates_reports_second_instance_conflict(self):
+        notifier = TelegramNotifier("token", "chat-id")
+        conflict = HTTPError(
+            "https://api.telegram.org/bottoken/getUpdates",
+            409,
+            "Conflict",
+            None,
+            BytesIO(b'{"ok":false,"description":"Conflict"}'),
+        )
+        with patch("telegram.urlopen", side_effect=conflict):
+            with self.assertRaises(TelegramPollingConflictError):
+                notifier.get_updates(timeout_seconds=0)
+
+    def test_history_persists_runtime_meta_and_throttles_events(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            history = HistoryStore(str(Path(tmpdir) / "scanner.db"))
+            self.assertEqual(history.get_app_meta("paused", "false"), "false")
+            history.set_app_meta("paused", "true")
+            self.assertEqual(history.get_app_meta("paused"), "true")
+            self.assertTrue(
+                history.claim_app_event("warning", ts=100, cooldown_seconds=60)
+            )
+            self.assertFalse(
+                history.claim_app_event("warning", ts=120, cooldown_seconds=60)
+            )
+            self.assertTrue(
+                history.claim_app_event("warning", ts=160, cooldown_seconds=60)
+            )
 
 
 if __name__ == "__main__":

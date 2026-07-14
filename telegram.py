@@ -10,6 +10,10 @@ from urllib.request import Request, urlopen
 from dump_scanner import DumpSignal
 
 
+class TelegramPollingConflictError(RuntimeError):
+    """Raised when another bot instance is already consuming Telegram updates."""
+
+
 class TelegramNotifier:
     def __init__(
         self,
@@ -95,6 +99,14 @@ class TelegramNotifier:
         response = self._post("getUpdates", payload, timeout_seconds=timeout_seconds + 5)
         return list(response.get("result", []))
 
+    def prepare_long_polling(self) -> dict:
+        if not self.enabled:
+            return {}
+        return self._post(
+            "deleteWebhook",
+            {"drop_pending_updates": False},
+        )
+
     def _post(self, method: str, payload: dict, timeout_seconds: int | None = None) -> dict:
         payload = json.dumps(payload).encode("utf-8")
         request = Request(
@@ -109,6 +121,10 @@ class TelegramNotifier:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             body = error.read().decode("utf-8", errors="replace")
+            if method == "getUpdates" and error.code == 409:
+                raise TelegramPollingConflictError(
+                    "another bot instance or webhook is consuming Telegram commands"
+                ) from error
             raise RuntimeError(f"Telegram error {error.code}: {body}") from error
 
     def _post_multipart(
