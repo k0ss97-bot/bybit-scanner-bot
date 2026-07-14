@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import sqlite3
+
+from dump_scanner import DUMP_MODEL_VERSION
+from history import HistoryStore
 
 
 def data_path(filename: str) -> str:
@@ -16,29 +18,14 @@ def main() -> None:
         print(f"Database not found: {db_path}")
         return
 
-    with sqlite3.connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                s.signal_type,
-                r.horizon_minutes,
-                COUNT(*) AS total,
-                AVG(r.move_pct) AS avg_move_pct,
-                AVG(r.max_favorable_pct) AS avg_max_favorable_pct,
-                AVG(r.max_adverse_pct) AS avg_max_adverse_pct,
-                SUM(CASE WHEN r.move_pct > 0 THEN 1 ELSE 0 END) AS positive_count
-            FROM signal_reviews r
-            JOIN signals s ON s.id = r.signal_id
-            GROUP BY s.signal_type, r.horizon_minutes
-            ORDER BY s.signal_type, r.horizon_minutes
-            """
-        ).fetchall()
+    history = HistoryStore(db_path)
+    rows = history.get_signal_stats(model_version=DUMP_MODEL_VERSION)
 
     if not rows:
         print("No reviewed signals yet.")
         return
 
-    print("Signal performance")
+    print(f"Signal performance: {DUMP_MODEL_VERSION}")
     for (
         signal_type,
         horizon_minutes,

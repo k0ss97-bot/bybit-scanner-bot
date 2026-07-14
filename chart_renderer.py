@@ -84,7 +84,7 @@ def render_dump_chart(
         draw.rectangle((left, top, right, bottom), fill=PANEL)
 
     recent = klines[-12:]
-    entry = signal.price
+    entry = getattr(signal, "entry_price", 0) or signal.price
     invalidation = max(entry * 1.01, max(kline.high_price for kline in recent))
     risk = max(entry * 0.002, invalidation - entry)
     target_1 = max(entry * 0.05, entry - risk)
@@ -123,7 +123,17 @@ def render_dump_chart(
     _draw_price_axis(draw, fonts["small"], right, price_top, price_bottom, price_min, price_max)
     _draw_level(draw, fonts["small"], left, right, y_for_price(signal.high_price), "PUMP HIGH", signal.high_price, PURPLE)
     _draw_level(draw, fonts["small"], left, right, y_for_price(invalidation), "INVALIDATION", invalidation, RED)
-    _draw_level(draw, fonts["small"], left, right, y_for_price(entry), "SIGNAL", entry, YELLOW, width=2)
+    _draw_level(
+        draw,
+        fonts["small"],
+        left,
+        right,
+        y_for_price(entry),
+        "BYBIT ENTRY",
+        entry,
+        YELLOW,
+        width=2,
+    )
     _draw_level(draw, fonts["small"], left, right, y_for_price(target_1), "TARGET 1R", target_1, GREEN)
     _draw_level(draw, fonts["small"], left, right, y_for_price(target_2), "TARGET 2R", target_2, BLUE)
 

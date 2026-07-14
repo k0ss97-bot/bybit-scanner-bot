@@ -135,7 +135,9 @@ class OpenAISignalAnalyzer:
 - источник: {getattr(signal, 'source', '')}
 - модель: {getattr(signal, 'mode', '')}
 - сила: {getattr(signal, 'signal_score', 0)}/10
-- цена: {getattr(signal, 'price', 0):g}
+- цена источника: {getattr(signal, 'price', 0):g}
+- исполнимый вход Bybit SHORT (bid): {getattr(signal, 'entry_price', 0) or getattr(signal, 'price', 0):g}
+- Bybit ask: {getattr(signal, 'entry_ask', 0):g}
 - high разгона: {getattr(signal, 'high_price', 0):g}
 - рост до разворота: {getattr(signal, 'price_growth_lookback_pct', 0):+.2f}%
 - откат от high: {getattr(signal, 'drawdown_from_high_pct', 0):+.2f}%

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import time
 import uuid
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -176,6 +177,15 @@ def format_dump_signal(signal: DumpSignal) -> str:
             f"Bybit 1H: цена {signal.confirmation_price_change_pct:+.2f}% | "
             f"OI {signal.confirmation_oi_change_pct:+.2f}% | "
             f"CVD {_compact_usdt(signal.confirmation_cvd_delta_usdt)}\n"
+            f"Подтверждение: {getattr(signal, 'confirmation_age_seconds', 0)}с | "
+            f"CVD-покрытие {getattr(signal, 'confirmation_cvd_coverage_seconds', 0) // 60}м\n"
+        )
+    execution_block = ""
+    if getattr(signal, "entry_quote_status", "") == "ok":
+        execution_block = (
+            f"Вход Bybit SHORT: bid {signal.entry_bid:g} | ask {signal.entry_ask:g}\n"
+            f"Спред: {signal.entry_spread_bps:.1f} bps | "
+            f"котировка {max(0, int(time.time()) - signal.entry_quote_ts)}с назад\n"
         )
     return (
         f"🔻 DUMP TREND | {signal.source.replace('+', ' + ')}\n"
@@ -186,7 +196,8 @@ def format_dump_signal(signal: DumpSignal) -> str:
         f"Рост за {signal.lookback_days}d: {signal.price_growth_lookback_pct:+.2f}%\n"
         f"Откат от high: {signal.drawdown_from_high_pct:+.2f}%\n"
         f"{funding_line}"
-        f"Цена: {signal.price:g} | high: {signal.high_price:g}\n"
+        f"Цена источника: {signal.price:g} | high: {signal.high_price:g}\n"
+        f"{execution_block}"
         f"Оборот 24h: {_compact_usdt(signal.turnover_24h)}\n"
         f"{confirmation_block}"
     )

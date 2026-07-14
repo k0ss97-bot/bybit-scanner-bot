@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,8 +14,8 @@ from bybit_client import BybitClient
 from binance_client import BinanceClient
 from chart_renderer import render_dump_chart
 from config import get_settings
-from dump_scanner import DumpScanner
-from history import HistoryStore
+from dump_scanner import DUMP_MODEL_VERSION, DumpScanner
+from history import HISTORY_SCHEMA_VERSION, HistoryStore
 from openai_analysis import OpenAISignalAnalyzer, compose_enriched_caption
 from state import StateStore
 from telegram import (
@@ -38,6 +40,9 @@ DUMP_SETTINGS_SNAPSHOT_FIELDS = (
     "dump_require_bybit_listing",
     "dump_cross_exchange_required",
     "dump_cross_exchange_max_age_seconds",
+    "dump_execution_quote_max_age_seconds",
+    "dump_entry_quote_delays_seconds",
+    "dump_review_max_lag_seconds",
     "dump_liquidation_min_oi_drop_pct",
     "dump_trend_min_oi_change_pct",
     "dump_min_price_growth_lookback_pct",
@@ -59,6 +64,40 @@ def dump_settings_snapshot(settings) -> str:
         for name in DUMP_SETTINGS_SNAPSHOT_FIELDS
     }
     return json.dumps(values, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def dump_config_hash(settings_snapshot: str) -> str:
+    return hashlib.sha256(settings_snapshot.encode("utf-8")).hexdigest()[:16]
+
+
+def build_commit() -> str:
+    for name in (
+        "BUILD_COMMIT",
+        "GIT_COMMIT_SHA",
+        "SOURCE_COMMIT",
+        "RENDER_GIT_COMMIT",
+    ):
+        value = os.getenv(name, "").strip()
+        if value:
+            return value[:40]
+    git_dir = Path(".git")
+    head_path = git_dir / "HEAD"
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+        if not head.startswith("ref: "):
+            return head[:40]
+        ref_name = head.removeprefix("ref: ")
+        ref_path = git_dir / ref_name
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8").strip()[:40]
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.exists():
+            for line in packed_refs.read_text(encoding="utf-8").splitlines():
+                if line.endswith(f" {ref_name}"):
+                    return line.split(" ", 1)[0][:40]
+    except OSError:
+        pass
+    return "unknown"
 
 
 def menu_keyboard() -> dict:
@@ -158,6 +197,61 @@ def schedule_telegram_signal_enrichment(**kwargs) -> None:
     thread.start()
 
 
+def record_entry_quote_scenarios(
+    *,
+    history: HistoryStore,
+    quote_provider,
+    settings,
+    signal_id: int,
+    symbol: str,
+    telegram_sent_ts: int,
+) -> None:
+    delays = sorted(
+        {
+            int(delay)
+            for delay in settings.dump_entry_quote_delays_seconds
+            if int(delay) > 0
+        }
+    )
+    for delay_seconds in delays:
+        target_ts = telegram_sent_ts + delay_seconds
+        if wait_or_stop(max(0, target_ts - time.time())):
+            return
+        try:
+            quote = quote_provider(symbol)
+            quote_age_seconds = max(0, int(time.time()) - int(quote.ts))
+            if quote_age_seconds > settings.dump_execution_quote_max_age_seconds:
+                raise RuntimeError(f"stale quote age={quote_age_seconds}s")
+            history.record_entry_quote_scenario(
+                signal_id=signal_id,
+                delay_seconds=delay_seconds,
+                target_ts=target_ts,
+                quote_ts=int(quote.ts),
+                bid=float(quote.bid_price),
+                ask=float(quote.ask_price),
+                spread_bps=float(quote.spread_bps),
+                status="ok",
+            )
+        except Exception as error:
+            history.record_entry_quote_scenario(
+                signal_id=signal_id,
+                delay_seconds=delay_seconds,
+                target_ts=target_ts,
+                status="missing",
+                error=str(error),
+            )
+
+
+def schedule_entry_quote_scenarios(**kwargs) -> None:
+    thread = threading.Thread(
+        target=record_entry_quote_scenarios,
+        kwargs=kwargs,
+        name=f"entry-quotes-{kwargs.get('symbol', 'signal')}",
+        daemon=True,
+    )
+    thread.start()
+
+
 def request_stop(reason: str) -> None:
     if not STOP_EVENT.is_set():
         print(f"Shutdown requested: {reason}", flush=True)
@@ -187,6 +281,8 @@ def send_signal_with_symbol_cooldown(
     chart_renderer=None,
     ai_analyzer: OpenAISignalAnalyzer | None = None,
     ai_scheduler=None,
+    execution_quote_provider=None,
+    entry_quote_scheduler=None,
 ) -> bool:
     symbol = str(getattr(signal, "symbol", ""))
     now = int(time.time())
@@ -208,14 +304,43 @@ def send_signal_with_symbol_cooldown(
         )
         return False
 
-    message = formatter(signal)
+    signal_for_send = signal
+    if execution_quote_provider is not None:
+        try:
+            quote = execution_quote_provider(symbol)
+            quote_age_seconds = max(0, int(time.time()) - int(quote.ts))
+            if quote_age_seconds > settings.dump_execution_quote_max_age_seconds:
+                raise RuntimeError(
+                    f"quote age {quote_age_seconds}s exceeds "
+                    f"{settings.dump_execution_quote_max_age_seconds}s"
+                )
+            signal_for_send = replace(
+                signal,
+                execution_venue="BYBIT",
+                entry_quote_ts=int(quote.ts),
+                entry_bid=float(quote.bid_price),
+                entry_ask=float(quote.ask_price),
+                entry_price=float(quote.bid_price),
+                entry_spread_bps=float(quote.spread_bps),
+                entry_quote_status="ok",
+            )
+        except Exception as error:
+            print(f"Telegram skip {symbol}: fresh Bybit quote unavailable: {error}", flush=True)
+            history.release_telegram_symbol_alert(symbol=symbol, ts=now)
+            history.release_dump_symbol_alert(
+                symbol=symbol,
+                source=signal_type.removeprefix("dump_").upper(),
+            )
+            return False
+
+    message = formatter(signal_for_send)
     sent = False
     message_id = None
     is_photo = False
     chart = None
     if chart_renderer is not None and settings.dump_chart_enabled:
         try:
-            chart = chart_renderer(signal)
+            chart = chart_renderer(signal_for_send)
             sent, message_id = safe_send_signal_photo(notifier, chart, message)
             is_photo = sent
         except Exception as error:
@@ -232,29 +357,70 @@ def send_signal_with_symbol_cooldown(
         )
         return False
 
+    telegram_sent_ts = int(time.time())
     source_prefix = signal_type.removeprefix("dump_").upper()
-    history.record_signal(
+    settings_snapshot = dump_settings_snapshot(settings)
+    signal_id = history.record_signal(
         signal_type=signal_type,
         symbol=f"{source_prefix}:{symbol}",
-        ts=now,
-        price=signal.price,
-        open_interest_change_pct=signal.oi_change_pct,
+        ts=telegram_sent_ts,
+        price=signal_for_send.price,
+        open_interest_change_pct=signal_for_send.oi_change_pct,
         futures_cvd_change_pct=0,
-        futures_cvd_delta_usdt=signal.cvd_delta_usdt,
+        futures_cvd_delta_usdt=signal_for_send.cvd_delta_usdt,
         spot_cvd_change_pct=0,
         spot_cvd_delta_usdt=0,
-        price_change_pct=signal.price_change_window_pct,
-        payload=str(signal),
-        model_version=str(getattr(signal, "model_version", "")),
-        settings_snapshot=dump_settings_snapshot(settings),
+        price_change_pct=signal_for_send.price_change_window_pct,
+        payload=str(signal_for_send),
+        model_version=str(getattr(signal_for_send, "model_version", "")),
+        settings_snapshot=settings_snapshot,
+        market_observed_ts=int(getattr(signal_for_send, "market_observed_ts", now)),
+        decision_ts=int(getattr(signal_for_send, "decision_ts", now)),
+        telegram_sent_ts=telegram_sent_ts,
+        market_price=float(signal_for_send.price),
+        entry_quote_ts=int(getattr(signal_for_send, "entry_quote_ts", telegram_sent_ts)),
+        entry_bid=float(getattr(signal_for_send, "entry_bid", 0.0)),
+        entry_ask=float(getattr(signal_for_send, "entry_ask", 0.0)),
+        entry_price=float(getattr(signal_for_send, "entry_price", 0.0)),
+        entry_spread_bps=float(getattr(signal_for_send, "entry_spread_bps", 0.0)),
+        entry_quote_status=str(getattr(signal_for_send, "entry_quote_status", "legacy")),
+        execution_venue=str(getattr(signal_for_send, "execution_venue", "")),
+        detection_source=str(getattr(signal_for_send, "source", source_prefix)),
+        mode=str(getattr(signal_for_send, "mode", "")),
+        score=int(getattr(signal_for_send, "signal_score", 0)),
+        turnover_24h=float(getattr(signal_for_send, "turnover_24h", 0.0)),
+        confirmation_age_seconds=int(
+            getattr(signal_for_send, "confirmation_age_seconds", 0)
+        ),
+        cvd_complete=bool(getattr(signal_for_send, "cvd_complete", False)),
+        confirmation_cvd_complete=bool(
+            getattr(signal_for_send, "confirmation_cvd_complete", False)
+        ),
+        cvd_coverage_seconds=int(getattr(signal_for_send, "cvd_coverage_seconds", 0)),
+        confirmation_cvd_coverage_seconds=int(
+            getattr(signal_for_send, "confirmation_cvd_coverage_seconds", 0)
+        ),
+        build_commit=build_commit(),
+        config_hash=dump_config_hash(settings_snapshot),
+        schema_version=HISTORY_SCHEMA_VERSION,
     )
+
+    if entry_quote_scheduler is not None and execution_quote_provider is not None:
+        entry_quote_scheduler(
+            history=history,
+            quote_provider=execution_quote_provider,
+            settings=settings,
+            signal_id=signal_id,
+            symbol=symbol,
+            telegram_sent_ts=telegram_sent_ts,
+        )
 
     if ai_analyzer is not None and ai_analyzer.enabled and message_id is not None:
         scheduler = ai_scheduler or schedule_telegram_signal_enrichment
         scheduler(
             notifier=notifier,
             analyzer=ai_analyzer,
-            signal=signal,
+            signal=signal_for_send,
             base_message=message,
             message_id=message_id,
             chart=chart,
@@ -337,6 +503,8 @@ def update_status(scanner: str, result, reviewed: int) -> None:
             "watchlist": len(result.watchlist_alerts),
             "failed": result.failed_symbols,
             "skipped": result.skipped_symbols,
+            "cvd_covered": getattr(result, "cvd_covered_symbols", 0),
+            "cvd_uncovered": getattr(result, "cvd_uncovered_symbols", 0),
             "reviews": reviewed,
             "rejections": format_rejections(result.rejection_reasons),
             "rejection_reasons": dict(result.rejection_reasons),
@@ -430,6 +598,8 @@ def format_status_message() -> str:
             f"сигналов: {data['signals']}, "
             f"почти сигналов: {data['watchlist']}, "
             f"пропущено: {data.get('skipped', 0)}, ошибок: {data['failed']}\n"
+            f"CVD 1H покрытие: {data.get('cvd_covered', 0)} полных, "
+            f"{data.get('cvd_uncovered', 0)} неполных\n"
             f"Причины отсечения: {data['rejections']}"
         )
     return "\n".join(lines)
@@ -463,6 +633,8 @@ def format_single_status_message(scanner: str) -> str:
         f"глубоко: {data.get('symbols', 0)}, сигналов: {data.get('signals', 0)}, "
         f"почти сигналов: {data.get('watchlist', 0)}, "
         f"пропущено: {data.get('skipped', 0)}, ошибок: {data.get('failed', 0)}\n"
+        f"CVD 1H покрытие: {data.get('cvd_covered', 0)} полных, "
+        f"{data.get('cvd_uncovered', 0)} неполных\n"
         f"Причины отсечения: {data.get('rejections', 'нет данных')}"
     )
 
@@ -492,6 +664,9 @@ def format_settings_message(settings) -> str:
         f"DUMP_TRADE_MAX_PAGES={settings.dump_trade_max_pages}\n"
         f"DUMP_CROSS_EXCHANGE_REQUIRED={str(settings.dump_cross_exchange_required).lower()}\n"
         f"DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS={settings.dump_cross_exchange_max_age_seconds}\n"
+        f"DUMP_EXECUTION_QUOTE_MAX_AGE_SECONDS={settings.dump_execution_quote_max_age_seconds}\n"
+        f"DUMP_ENTRY_QUOTE_DELAYS_SECONDS={','.join(str(value) for value in settings.dump_entry_quote_delays_seconds)}\n"
+        f"DUMP_REVIEW_MAX_LAG_SECONDS={settings.dump_review_max_lag_seconds}\n"
         f"DUMP_LIQUIDATION_MIN_OI_DROP_PCT={settings.dump_liquidation_min_oi_drop_pct:g}\n"
         f"DUMP_TREND_MIN_OI_CHANGE_PCT={settings.dump_trend_min_oi_change_pct:g}\n"
         f"DUMP_CHART_ENABLED={str(settings.dump_chart_enabled).lower()}\n"
@@ -519,12 +694,16 @@ def format_settings_message(settings) -> str:
     )
 
 
-def format_stats_message(history: HistoryStore) -> str:
-    reviewed = history.update_signal_reviews()
-    rows = history.get_signal_stats()
-    recent = history.get_recent_signals(limit=5)
+def format_stats_message(history: HistoryStore, settings) -> str:
+    reviewed = history.update_signal_reviews(
+        max_lag_seconds=settings.dump_review_max_lag_seconds,
+    )
+    rows = history.get_signal_stats(model_version=DUMP_MODEL_VERSION)
+    quality = history.get_review_quality(model_version=DUMP_MODEL_VERSION)
+    entry_scenarios = history.get_entry_scenario_stats(model_version=DUMP_MODEL_VERSION)
+    recent = history.get_recent_signals(limit=5, model_version=DUMP_MODEL_VERSION)
 
-    lines = ["Статистика сигналов:"]
+    lines = [f"Статистика сигналов {DUMP_MODEL_VERSION}:"]
     if reviewed:
         lines.append(f"Новых расчетов результата: {reviewed}")
 
@@ -549,6 +728,27 @@ def format_stats_message(history: HistoryStore) -> str:
             )
     else:
         lines.append("Пока нет рассчитанных результатов. Нужно дождаться 15/30/60/240 минут после сигналов.")
+
+    if quality:
+        quality_parts = []
+        for status, total, avg_lag_seconds in quality:
+            if status == "ok":
+                quality_parts.append(
+                    f"точных={total}, среднее опоздание={float(avg_lag_seconds or 0):.0f}с"
+                )
+            elif status == "missing":
+                quality_parts.append(f"без котировки={total}")
+        if quality_parts:
+            lines.append("Качество измерений: " + ", ".join(quality_parts))
+
+    if entry_scenarios:
+        lines.append("Задержка ручного входа Bybit:")
+        for delay_seconds, total, avg_bid_drift_pct, avg_spread_bps in entry_scenarios:
+            lines.append(
+                f"{delay_seconds}s: замеров={total}, "
+                f"изменение bid={avg_bid_drift_pct:+.3f}%, "
+                f"спред={avg_spread_bps:.1f} bps"
+            )
 
     lines.append("\nПоследние сигналы:")
     if not recent:
@@ -853,7 +1053,11 @@ def run_status_loop() -> None:
                 elif is_settings_request(text):
                     safe_send_message(notifier, format_settings_message(settings), menu_keyboard())
                 elif is_stats_request(text):
-                    safe_send_message(notifier, format_stats_message(history), menu_keyboard())
+                    safe_send_message(
+                        notifier,
+                        format_stats_message(history, settings),
+                        menu_keyboard(),
+                    )
                 elif why_target is not None:
                     safe_send_message(
                         notifier,
@@ -910,15 +1114,17 @@ def run_dump_loop(source: str) -> None:
 
     if source.upper() == "BINANCE":
         client = build_binance_market_client(settings)
+        execution_client = build_bybit_client(settings)
         allowed_symbols_provider = None
         if settings.dump_require_bybit_listing:
             bybit_symbol_cache = BybitSymbolCache(
-                build_bybit_client(settings),
+                execution_client,
                 settings.dump_bybit_symbol_cache_minutes,
             )
             allowed_symbols_provider = bybit_symbol_cache.get_symbols
     else:
         client = build_bybit_client(settings)
+        execution_client = client
         allowed_symbols_provider = None
 
     history = HistoryStore(data_path("scanner.db"))
@@ -967,8 +1173,12 @@ def run_dump_loop(source: str) -> None:
                     formatter=format_dump_signal,
                     chart_renderer=chart_renderer,
                     ai_analyzer=ai_analyzer,
+                    execution_quote_provider=execution_client.get_best_bid_ask,
+                    entry_quote_scheduler=schedule_entry_quote_scenarios,
                 )
-            reviewed = history.update_signal_reviews()
+            reviewed = history.update_signal_reviews(
+                max_lag_seconds=settings.dump_review_max_lag_seconds,
+            )
             history.cleanup_old_data(
                 snapshot_retention_days=settings.history_snapshot_retention_days,
                 watchlist_retention_days=settings.watchlist_retention_days,
@@ -982,6 +1192,8 @@ def run_dump_loop(source: str) -> None:
                 f"signals={len(result.signals)}, "
                 f"failed={result.failed_symbols}, "
                 f"reviews={reviewed}, "
+                f"cvd_covered={result.cvd_covered_symbols}, "
+                f"cvd_uncovered={result.cvd_uncovered_symbols}, "
                 f"rejections={format_rejections(result.rejection_reasons)}",
                 flush=True,
             )
@@ -997,13 +1209,18 @@ def run_dump_loop(source: str) -> None:
 def main() -> None:
     install_signal_handlers()
     settings = get_settings()
+    settings_snapshot = dump_settings_snapshot(settings)
     print(
         "Config check: "
         f"telegram_enabled={settings.telegram_enabled}, "
         f"token_present={bool(settings.telegram_bot_token)}, "
         f"chat_id_present={bool(settings.telegram_chat_id)}, "
         f"openai_analysis_enabled={settings.openai_analysis_enabled}, "
-        f"openai_key_present={bool(settings.openai_api_key)}",
+        f"openai_key_present={bool(settings.openai_api_key)}, "
+        f"model={DUMP_MODEL_VERSION}, "
+        f"build={build_commit()[:12]}, "
+        f"schema={HISTORY_SCHEMA_VERSION}, "
+        f"config={dump_config_hash(settings_snapshot)}",
         flush=True,
     )
     dump_bybit_thread = threading.Thread(

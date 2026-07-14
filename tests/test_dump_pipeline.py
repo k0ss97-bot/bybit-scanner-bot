@@ -10,12 +10,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from bybit_client import BybitClient, Trade
-from bybit_client import Kline
+from bybit_client import BybitClient, Kline, OrderbookQuote, Ticker, Trade
 from binance_client import BinanceClient, BinanceTicker, OpenInterestPoint
 from chart_renderer import render_dump_chart
 from config import get_settings
 from dump_scanner import (
+    BINANCE_DEEP_CANDIDATES,
+    DUMP_MODEL_VERSION,
+    DumpSignal,
     DumpScanner,
     DumpTimeframeMetrics,
     MARKET_EVIDENCE,
@@ -197,6 +199,40 @@ class DumpPipelineTests(unittest.TestCase):
             dump_cross_exchange_max_age_seconds=300,
         )
 
+    @staticmethod
+    def _signal(**overrides):
+        values = {
+            "source": "BINANCE+BYBIT",
+            "mode": "SHORT_TREND",
+            "confirmation_source": "BYBIT",
+            "symbol": "AAAUSDT",
+            "window_minutes": 60,
+            "lookback_days": 2,
+            "signal_score": 8,
+            "price_growth_lookback_pct": 30,
+            "drawdown_from_high_pct": -10,
+            "oi_change_pct": 1,
+            "cvd_delta_usdt": -20_000,
+            "price_change_window_pct": -2,
+            "funding_rate": -0.0001,
+            "price": 100,
+            "high_price": 120,
+            "turnover_24h": 10_000_000,
+            "new_trades": 500,
+            "consecutive_matches": 1,
+            "confirmation_price_change_pct": -1,
+            "confirmation_oi_change_pct": 0.5,
+            "confirmation_cvd_delta_usdt": -10_000,
+            "market_observed_ts": int(time.time()),
+            "decision_ts": int(time.time()),
+            "cvd_complete": True,
+            "confirmation_cvd_complete": True,
+            "cvd_coverage_seconds": 3_600,
+            "confirmation_cvd_coverage_seconds": 3_600,
+        }
+        values.update(overrides)
+        return DumpSignal(**values)
+
     def test_bybit_trade_gap_is_detected(self):
         client = FakeBybitClient(
             [
@@ -211,6 +247,35 @@ class DumpPipelineTests(unittest.TestCase):
         )
         self.assertFalse(batch.complete)
         self.assertEqual([trade.exec_id for trade in batch.trades], ["new-1", "new-2"])
+
+    def test_bybit_same_timestamp_without_last_trade_is_incomplete(self):
+        client = FakeBybitClient(
+            [Trade("unknown", "AAAUSDT", 10, 1, "Sell", 1_000)]
+        )
+        batch = client.get_trades_since(
+            "AAAUSDT",
+            last_trade_id="missing",
+            last_time_ms=1_000,
+        )
+        self.assertFalse(batch.complete)
+        self.assertEqual(batch.trades, [])
+
+    def test_bybit_best_bid_ask_uses_orderbook_server_time(self):
+        client = BybitClient("https://example.invalid")
+        payload = {
+            "time": 1_700_000_000_999,
+            "result": {
+                "ts": 1_700_000_000_123,
+                "b": [["99.5", "12"]],
+                "a": [["100.0", "8"]],
+            },
+        }
+        with patch.object(client, "_get", return_value=payload):
+            quote = client.get_best_bid_ask("AAAUSDT")
+        self.assertEqual(quote.ts, 1_700_000_000)
+        self.assertEqual(quote.bid_price, 99.5)
+        self.assertEqual(quote.ask_price, 100.0)
+        self.assertGreater(quote.spread_bps, 0)
 
     def test_binance_trades_are_paginated_and_saturation_is_marked(self):
         batch = FakeBinanceClient().get_trades_since(
@@ -267,6 +332,25 @@ class DumpPipelineTests(unittest.TestCase):
         self.assertEqual(scanner._signal_mode(0.5), "SHORT_TREND")
         self.assertEqual(scanner._signal_mode(-1.0), "UNCONFIRMED_OI")
 
+    def test_hour_window_rejects_snapshot_that_is_too_old(self):
+        scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
+        now = 10_000
+        state = SymbolState(
+            snapshots=[
+                Snapshot(
+                    now - 7_200,
+                    100,
+                    0,
+                    10,
+                    0,
+                    5_000_000,
+                    cvd_generation=0,
+                )
+            ],
+            cvd_generation=0,
+        )
+        self.assertIsNone(scanner._find_window_snapshot(now, state))
+
     def test_top_100_is_reduced_to_deep_shortlist(self):
         scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
         scanner._get_dump_structure = lambda symbol, price: (20.0, -5.0, 11.0)
@@ -287,6 +371,41 @@ class DumpPipelineTests(unittest.TestCase):
         selected = scanner._select_deep_candidates(1_000, tickers, reasons)
         self.assertEqual(len(selected), 30)
         self.assertEqual(reasons["outside_deep_shortlist"], 70)
+
+    def test_binance_candidate_bypasses_bybit_top_and_structure_prefilter(self):
+        settings = replace(self.settings, dump_max_symbols=2, dump_deep_max_symbols=1)
+        scanner = DumpScanner("BYBIT", object(), StateStore("unused.json"), settings)
+        tickers = [
+            (
+                rank,
+                Ticker(
+                    symbol=symbol,
+                    price=10,
+                    open_interest=100,
+                    funding_rate=0,
+                    turnover_24h=10_000_000 - rank,
+                    volume_24h=1_000,
+                    high_price_24h=12,
+                    low_price_24h=9,
+                    price_change_24h_pct=-1,
+                ),
+            )
+            for rank, symbol in (
+                (1, "TOP1USDT"),
+                (2, "TOP2USDT"),
+                (101, "DIRECTUSDT"),
+            )
+        ]
+        BINANCE_DEEP_CANDIDATES.clear()
+        BINANCE_DEEP_CANDIDATES.add("DIRECTUSDT")
+        try:
+            top_selected = scanner._select_top_ranked(1_000, tickers, {})
+            self.assertIn("DIRECTUSDT", [ticker.symbol for _, ticker in top_selected])
+            scanner._get_dump_structure = lambda symbol, price: None
+            deep_selected = scanner._select_deep_candidates(1_000, top_selected, {})
+            self.assertEqual([ticker.symbol for _, ticker in deep_selected], ["DIRECTUSDT"])
+        finally:
+            BINANCE_DEEP_CANDIDATES.clear()
 
     def test_binance_requires_recent_bybit_confirmation(self):
         scanner = DumpScanner("BINANCE", object(), StateStore("unused.json"), self.settings)
@@ -479,6 +598,88 @@ class DumpPipelineTests(unittest.TestCase):
             horizons = [row[1] for row in history.get_signal_stats()]
             self.assertEqual(horizons, [15, 30, 60, 240])
 
+    def test_history_schema_migration_preserves_legacy_reviews(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "scanner.db"
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE signals (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        signal_type TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        ts INTEGER NOT NULL,
+                        price REAL NOT NULL,
+                        open_interest_change_pct REAL NOT NULL,
+                        futures_cvd_change_pct REAL NOT NULL,
+                        futures_cvd_delta_usdt REAL NOT NULL,
+                        spot_cvd_change_pct REAL NOT NULL,
+                        spot_cvd_delta_usdt REAL NOT NULL,
+                        price_change_pct REAL NOT NULL,
+                        payload TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE signal_reviews (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        signal_id INTEGER NOT NULL,
+                        horizon_minutes INTEGER NOT NULL,
+                        reviewed_ts INTEGER NOT NULL,
+                        price_at_review REAL NOT NULL,
+                        move_pct REAL NOT NULL,
+                        max_favorable_pct REAL NOT NULL,
+                        max_adverse_pct REAL NOT NULL,
+                        UNIQUE(signal_id, horizon_minutes)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE signal_price_snapshots (
+                        signal_id INTEGER NOT NULL,
+                        ts INTEGER NOT NULL,
+                        price REAL NOT NULL,
+                        UNIQUE(signal_id, ts)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO signals (
+                        signal_type, symbol, ts, price,
+                        open_interest_change_pct, futures_cvd_change_pct,
+                        futures_cvd_delta_usdt, spot_cvd_change_pct,
+                        spot_cvd_delta_usdt, price_change_pct, payload
+                    )
+                    VALUES ('dump_binance', 'BINANCE:AAAUSDT', 1000, 100, 0, 0, 0, 0, 0, -1, 'old')
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO signal_reviews (
+                        signal_id, horizon_minutes, reviewed_ts,
+                        price_at_review, move_pct,
+                        max_favorable_pct, max_adverse_pct
+                    )
+                    VALUES (1, 15, 2000, 95, 5, 5, 0)
+                    """
+                )
+                conn.commit()
+
+            history = HistoryStore(str(db_path))
+            with closing(sqlite3.connect(history.path)) as conn:
+                review = conn.execute(
+                    "SELECT status, move_pct FROM signal_reviews WHERE signal_id = 1"
+                ).fetchone()
+                signal_columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(signals)")
+                }
+            self.assertEqual(review, ("legacy", 5.0))
+            self.assertIn("entry_quote_ts", signal_columns)
+            self.assertIn("schema_version", signal_columns)
+
     def test_signal_review_uses_entry_as_metric_baseline(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
@@ -513,6 +714,149 @@ class DumpPipelineTests(unittest.TestCase):
                 ).fetchone()
             self.assertAlmostEqual(favorable, 5)
             self.assertEqual(adverse, 0)
+
+    def test_exact_review_uses_first_bybit_ask_after_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            signal_ts = 10_000
+            signal_id = history.record_signal(
+                signal_type="dump_binance",
+                symbol="BINANCE:AAAUSDT",
+                ts=signal_ts,
+                price=101,
+                open_interest_change_pct=1,
+                futures_cvd_change_pct=0,
+                futures_cvd_delta_usdt=-10_000,
+                spot_cvd_change_pct=0,
+                spot_cvd_delta_usdt=0,
+                price_change_pct=-1,
+                payload="test",
+                model_version=DUMP_MODEL_VERSION,
+                telegram_sent_ts=signal_ts,
+                entry_quote_ts=signal_ts - 1,
+                entry_bid=100,
+                entry_ask=100.2,
+                entry_price=100,
+                entry_quote_status="ok",
+                execution_venue="BYBIT",
+            )
+            history.record_pending_signal_quotes(
+                quotes={"AAAUSDT": (89.8, 90)},
+                ts=signal_ts + 14 * 60,
+                model_version=DUMP_MODEL_VERSION,
+            )
+            self.assertEqual(
+                history.update_signal_reviews(
+                    now=signal_ts + 15 * 60 + 10,
+                    horizons_minutes=(15,),
+                    max_lag_seconds=300,
+                ),
+                0,
+            )
+            history.record_pending_signal_quotes(
+                quotes={"AAAUSDT": (94.8, 95)},
+                ts=signal_ts + 15 * 60 + 120,
+                model_version=DUMP_MODEL_VERSION,
+            )
+            reviewed = history.update_signal_reviews(
+                now=signal_ts + 15 * 60 + 120,
+                horizons_minutes=(15,),
+                max_lag_seconds=300,
+            )
+            self.assertEqual(reviewed, 1)
+            with closing(sqlite3.connect(history.path)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT status, price_at_review, price_ts, lag_seconds, move_pct
+                    FROM signal_reviews
+                    WHERE signal_id = ? AND horizon_minutes = 15
+                    """,
+                    (signal_id,),
+                ).fetchone()
+            self.assertEqual(row[:4], ("ok", 95.0, signal_ts + 1_020, 120))
+            self.assertAlmostEqual(row[4], 5.0)
+
+    def test_exact_review_marks_missing_quote_and_excludes_it_from_stats(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            signal_ts = 20_000
+            history.record_signal(
+                signal_type="dump_binance",
+                symbol="BINANCE:AAAUSDT",
+                ts=signal_ts,
+                price=101,
+                open_interest_change_pct=1,
+                futures_cvd_change_pct=0,
+                futures_cvd_delta_usdt=-10_000,
+                spot_cvd_change_pct=0,
+                spot_cvd_delta_usdt=0,
+                price_change_pct=-1,
+                payload="test",
+                model_version=DUMP_MODEL_VERSION,
+                telegram_sent_ts=signal_ts,
+                entry_quote_ts=signal_ts - 1,
+                entry_bid=100,
+                entry_ask=100.2,
+                entry_price=100,
+                entry_quote_status="ok",
+                execution_venue="BYBIT",
+            )
+            reviewed = history.update_signal_reviews(
+                now=signal_ts + 15 * 60 + 301,
+                horizons_minutes=(15,),
+                max_lag_seconds=300,
+            )
+            self.assertEqual(reviewed, 1)
+            self.assertEqual(history.get_signal_stats(DUMP_MODEL_VERSION), [])
+            quality = history.get_review_quality(DUMP_MODEL_VERSION)
+            self.assertEqual(quality[0][:2], ("missing", 1))
+
+    def test_entry_delay_scenario_tracks_executable_bybit_bid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            signal_id = history.record_signal(
+                signal_type="dump_binance",
+                symbol="BINANCE:AAAUSDT",
+                ts=30_000,
+                price=101,
+                open_interest_change_pct=1,
+                futures_cvd_change_pct=0,
+                futures_cvd_delta_usdt=-10_000,
+                spot_cvd_change_pct=0,
+                spot_cvd_delta_usdt=0,
+                price_change_pct=-1,
+                payload="test",
+                model_version=DUMP_MODEL_VERSION,
+                entry_quote_ts=30_000,
+                entry_bid=100,
+                entry_ask=100.2,
+                entry_price=100,
+                entry_quote_status="ok",
+                execution_venue="BYBIT",
+            )
+            history.record_entry_quote_scenario(
+                signal_id=signal_id,
+                delay_seconds=5,
+                target_ts=30_005,
+                quote_ts=30_006,
+                bid=99,
+                ask=99.2,
+                spread_bps=20.2,
+                status="ok",
+            )
+            stats = history.get_entry_scenario_stats(DUMP_MODEL_VERSION)
+            self.assertEqual(stats[0][:2], (5, 1))
+            self.assertAlmostEqual(stats[0][2], 1.0)
+            with closing(sqlite3.connect(history.path)) as conn:
+                snapshot = conn.execute(
+                    """
+                    SELECT price, venue, bid, ask, quote_status
+                    FROM signal_price_snapshots
+                    WHERE signal_id = ? AND ts = 30006
+                    """,
+                    (signal_id,),
+                ).fetchone()
+            self.assertEqual(snapshot, (99.2, "BYBIT", 99.0, 99.2, "ok"))
 
     def test_watchlist_keeps_one_best_candidate_per_bucket(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -653,6 +997,85 @@ class DumpPipelineTests(unittest.TestCase):
             self.assertEqual(snapshot["dump_max_symbols"], 100)
             self.assertNotIn("openai_api_key", snapshot)
             self.assertNotIn("telegram_bot_token", snapshot)
+
+    def test_fresh_bybit_quote_is_used_as_executable_short_entry(self):
+        signal = self._signal(price=101)
+        quote_ts = int(time.time())
+        quote = OrderbookQuote(
+            symbol="AAAUSDT",
+            bid_price=99.5,
+            bid_size=10,
+            ask_price=100,
+            ask_size=8,
+            ts=quote_ts,
+        )
+        notifier = FakeNotifier()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            sent = send_signal_with_symbol_cooldown(
+                notifier=notifier,
+                history=history,
+                settings=self.settings,
+                signal=signal,
+                signal_type="dump_binance",
+                formatter=lambda item: f"entry={item.entry_price}",
+                execution_quote_provider=lambda _: quote,
+            )
+            self.assertTrue(sent)
+            self.assertEqual(notifier.messages, ["entry=99.5"])
+            with closing(sqlite3.connect(history.path)) as conn:
+                row = conn.execute(
+                    """
+                    SELECT
+                        price, market_price, entry_price, entry_bid, entry_ask,
+                        entry_quote_ts, entry_quote_status, execution_venue,
+                        schema_version, config_hash
+                    FROM signals
+                    """
+                ).fetchone()
+                snapshot = conn.execute(
+                    """
+                    SELECT price, venue, bid, ask, quote_status
+                    FROM signal_price_snapshots
+                    """
+                ).fetchone()
+            self.assertEqual(row[:8], (101.0, 101.0, 99.5, 99.5, 100.0, quote_ts, "ok", "BYBIT"))
+            self.assertTrue(row[8])
+            self.assertEqual(len(row[9]), 16)
+            self.assertEqual(snapshot, (100.0, "BYBIT", 99.5, 100.0, "ok"))
+
+    def test_stale_bybit_quote_blocks_telegram_and_releases_cooldown(self):
+        signal = self._signal()
+        stale_quote = OrderbookQuote(
+            symbol="AAAUSDT",
+            bid_price=99.5,
+            bid_size=10,
+            ask_price=100,
+            ask_size=8,
+            ts=int(time.time()) - self.settings.dump_execution_quote_max_age_seconds - 1,
+        )
+        notifier = FakeNotifier()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            history = HistoryStore(str(Path(temp_dir) / "scanner.db"))
+            sent = send_signal_with_symbol_cooldown(
+                notifier=notifier,
+                history=history,
+                settings=self.settings,
+                signal=signal,
+                signal_type="dump_binance",
+                formatter=lambda _: "signal",
+                execution_quote_provider=lambda _: stale_quote,
+            )
+            self.assertFalse(sent)
+            self.assertEqual(notifier.messages, [])
+            self.assertEqual(history.get_recent_signals(), [])
+            claimed, _, _ = history.claim_telegram_symbol_alert(
+                symbol="AAAUSDT",
+                ts=int(time.time()),
+                signal_type="dump_binance",
+                cooldown_minutes=240,
+            )
+            self.assertTrue(claimed)
 
     def test_chart_and_statistics_are_sent_as_one_message(self):
         signal = SimpleNamespace(

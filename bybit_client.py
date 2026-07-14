@@ -25,6 +25,26 @@ class Ticker:
     low_price_24h: float
     price_change_24h_pct: float
     funding_rate_available: bool = True
+    bid_price: float = 0.0
+    ask_price: float = 0.0
+    quote_ts: int = 0
+
+
+@dataclass(frozen=True)
+class OrderbookQuote:
+    symbol: str
+    bid_price: float
+    bid_size: float
+    ask_price: float
+    ask_size: float
+    ts: int
+
+    @property
+    def spread_bps(self) -> float:
+        midpoint = (self.bid_price + self.ask_price) / 2
+        if midpoint <= 0:
+            return 0.0
+        return ((self.ask_price - self.bid_price) / midpoint) * 10_000
 
 
 @dataclass(frozen=True)
@@ -82,6 +102,7 @@ class BybitClient:
 
     def get_linear_tickers(self) -> list[Ticker]:
         data = self._get("/v5/market/tickers", {"category": "linear"})
+        quote_ts = _milliseconds_to_seconds(data.get("time"))
         tickers = []
         for item in data["result"]["list"]:
             symbol = item.get("symbol", "")
@@ -99,9 +120,39 @@ class BybitClient:
                     low_price_24h=_to_float(item.get("lowPrice24h")),
                     price_change_24h_pct=_to_float(item.get("price24hPcnt")) * 100,
                     funding_rate_available=item.get("fundingRate") not in (None, ""),
+                    bid_price=_to_float(item.get("bid1Price")),
+                    ask_price=_to_float(item.get("ask1Price")),
+                    quote_ts=quote_ts,
                 )
             )
         return tickers
+
+    def get_best_bid_ask(
+        self,
+        symbol: str,
+        category: str = "linear",
+    ) -> OrderbookQuote:
+        data = self._get(
+            "/v5/market/orderbook",
+            {"category": category, "symbol": symbol, "limit": 1},
+        )
+        result = data["result"]
+        bids = result.get("b", [])
+        asks = result.get("a", [])
+        if not bids or not asks:
+            raise RuntimeError(f"Bybit orderbook is empty for {symbol}")
+
+        quote = OrderbookQuote(
+            symbol=symbol,
+            bid_price=_to_float(bids[0][0]),
+            bid_size=_to_float(bids[0][1]),
+            ask_price=_to_float(asks[0][0]),
+            ask_size=_to_float(asks[0][1]),
+            ts=_milliseconds_to_seconds(result.get("ts") or data.get("time")),
+        )
+        if quote.bid_price <= 0 or quote.ask_price <= 0 or quote.ask_price < quote.bid_price:
+            raise RuntimeError(f"Bybit orderbook quote is invalid for {symbol}")
+        return quote
 
     def get_recent_trades(
         self,
@@ -154,9 +205,11 @@ class BybitClient:
 
         newest_time = trades[-1].time_ms
         oldest_time = trades[0].time_ms
-        if newest_time <= last_time_ms:
+        if newest_time < last_time_ms:
             return TradeBatch(trades=[], complete=True)
-        complete = oldest_time <= last_time_ms
+        if newest_time == last_time_ms:
+            return TradeBatch(trades=[], complete=False)
+        complete = oldest_time < last_time_ms
         return TradeBatch(
             trades=[trade for trade in trades if trade.time_ms > last_time_ms],
             complete=complete,
@@ -259,3 +312,11 @@ def _to_float(value: Any) -> float:
     if value in (None, ""):
         return 0.0
     return float(value)
+
+
+def _milliseconds_to_seconds(value: Any) -> int:
+    try:
+        timestamp = int(value)
+    except (TypeError, ValueError):
+        return int(time.time())
+    return timestamp // 1000 if timestamp > 10_000_000_000 else timestamp

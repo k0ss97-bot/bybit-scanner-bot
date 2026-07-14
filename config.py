@@ -187,6 +187,9 @@ class Settings:
     dump_trade_max_pages: int
     dump_cross_exchange_required: bool
     dump_cross_exchange_max_age_seconds: int
+    dump_execution_quote_max_age_seconds: int
+    dump_entry_quote_delays_seconds: tuple[int, ...]
+    dump_review_max_lag_seconds: int
     dump_liquidation_min_oi_drop_pct: float
     dump_trend_min_oi_change_pct: float
     dump_chart_enabled: bool
@@ -359,6 +362,15 @@ def get_settings() -> Settings:
         dump_trade_max_pages=_int("DUMP_TRADE_MAX_PAGES", 5),
         dump_cross_exchange_required=_bool("DUMP_CROSS_EXCHANGE_REQUIRED", True),
         dump_cross_exchange_max_age_seconds=_int("DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS", 300),
+        dump_execution_quote_max_age_seconds=_int(
+            "DUMP_EXECUTION_QUOTE_MAX_AGE_SECONDS",
+            15,
+        ),
+        dump_entry_quote_delays_seconds=_int_list(
+            "DUMP_ENTRY_QUOTE_DELAYS_SECONDS",
+            (5, 15, 30),
+        ),
+        dump_review_max_lag_seconds=_int("DUMP_REVIEW_MAX_LAG_SECONDS", 300),
         dump_liquidation_min_oi_drop_pct=_float("DUMP_LIQUIDATION_MIN_OI_DROP_PCT", 1.5),
         dump_trend_min_oi_change_pct=_float("DUMP_TREND_MIN_OI_CHANGE_PCT", -0.5),
         dump_chart_enabled=_bool("DUMP_CHART_ENABLED", True),

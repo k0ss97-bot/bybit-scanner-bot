@@ -19,7 +19,7 @@ MARKET_EVIDENCE_LOCK = threading.Lock()
 MARKET_EVIDENCE: dict[tuple[str, str], "MarketEvidence"] = {}
 DEEP_CANDIDATES_LOCK = threading.Lock()
 BINANCE_DEEP_CANDIDATES: set[str] = set()
-DUMP_MODEL_VERSION = "dump-v5-data-integrity"
+DUMP_MODEL_VERSION = "dump-v5.2-confirmation"
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,20 @@ class DumpSignal:
     confirmation_cvd_delta_usdt: float
     timeframes: tuple[DumpTimeframeMetrics, ...] = ()
     funding_available: bool = True
+    market_observed_ts: int = 0
+    decision_ts: int = 0
+    confirmation_age_seconds: int = 0
+    cvd_complete: bool = False
+    confirmation_cvd_complete: bool = False
+    cvd_coverage_seconds: int = 0
+    confirmation_cvd_coverage_seconds: int = 0
+    execution_venue: str = "BYBIT"
+    entry_quote_ts: int = 0
+    entry_bid: float = 0.0
+    entry_ask: float = 0.0
+    entry_price: float = 0.0
+    entry_spread_bps: float = 0.0
+    entry_quote_status: str = "pending"
     model_version: str = DUMP_MODEL_VERSION
 
 
@@ -76,6 +90,7 @@ class MarketEvidence:
     oi_change_pct: float
     cvd_delta_usdt: float
     cvd_complete: bool
+    cvd_coverage_seconds: int = 0
 
 
 @dataclass(frozen=True)
@@ -105,6 +120,8 @@ class DumpScanResult:
     failed_symbols: int
     skipped_symbols: int
     rejection_reasons: dict[str, int]
+    cvd_covered_symbols: int = 0
+    cvd_uncovered_symbols: int = 0
 
 
 class DumpScanner:
@@ -126,10 +143,14 @@ class DumpScanner:
         self.structure_cache: dict[str, DumpStructureCacheEntry] = {}
 
     def scan_once(self, progress_callback=None) -> DumpScanResult:
-        now = int(time.time())
+        scan_started_ts = int(time.time())
         rejection_reasons: dict[str, int] = {}
-        screened_tickers = self._select_tickers(now, rejection_reasons)
-        tickers = self._select_deep_candidates(now, screened_tickers, rejection_reasons)
+        screened_tickers = self._select_tickers(scan_started_ts, rejection_reasons)
+        tickers = self._select_deep_candidates(
+            scan_started_ts,
+            screened_tickers,
+            rejection_reasons,
+        )
         if progress_callback is not None:
             progress_callback(0, len(tickers))
 
@@ -137,16 +158,34 @@ class DumpScanner:
         watchlist_alerts: list[DumpWatchlistAlert] = []
         failed_symbols = 0
         skipped_symbols = 0
+        cvd_covered_symbols = 0
+        cvd_uncovered_symbols = 0
 
         for index, (source_rank, ticker) in enumerate(tickers, start=1):
             try:
                 state = self.store.get_symbol(ticker.symbol)
                 open_interest = self._get_open_interest(ticker)
                 new_trades, cvd_complete = self._update_cvd(ticker.symbol, state)
-                self._add_snapshot(now, ticker, open_interest, state, new_trades)
+                market_observed_ts = int(time.time())
+                self._add_snapshot(
+                    market_observed_ts,
+                    ticker,
+                    open_interest,
+                    state,
+                    new_trades,
+                )
+                window_snapshot = self._find_window_snapshot(market_observed_ts, state)
+                if (
+                    cvd_complete
+                    and window_snapshot is not None
+                    and window_snapshot.cvd_generation == state.cvd_generation
+                ):
+                    cvd_covered_symbols += 1
+                else:
+                    cvd_uncovered_symbols += 1
 
                 signal, watchlist_alert = self._build_signal(
-                    now,
+                    market_observed_ts,
                     ticker,
                     state,
                     rejection_reasons,
@@ -166,7 +205,7 @@ class DumpScanner:
                             passed_checks=watchlist_alert.passed_checks,
                             missing_checks=watchlist_alert.missing_checks,
                             payload=str(watchlist_alert),
-                            ts=now,
+                            ts=market_observed_ts,
                             cooldown_seconds=(
                                 self.settings.dump_watchlist_snapshot_minutes * 60
                             ),
@@ -194,6 +233,8 @@ class DumpScanner:
             failed_symbols=failed_symbols,
             skipped_symbols=skipped_symbols,
             rejection_reasons=rejection_reasons,
+            cvd_covered_symbols=cvd_covered_symbols,
+            cvd_uncovered_symbols=cvd_uncovered_symbols,
         )
 
     def _select_deep_candidates(
@@ -202,8 +243,22 @@ class DumpScanner:
         tickers: list[tuple[int, Any]],
         rejection_reasons: dict[str, int],
     ) -> list[tuple[int, Any]]:
+        primary_symbols: set[str] = set()
+        if self.source == "BYBIT":
+            with DEEP_CANDIDATES_LOCK:
+                primary_symbols = set(BINANCE_DEEP_CANDIDATES)
+
+        if self.source == "BYBIT" and self.settings.dump_cross_exchange_required:
+            direct = [
+                item for item in tickers if item[1].symbol in primary_symbols
+            ]
+            return direct[: self.settings.dump_deep_max_symbols]
+
         eligible: list[tuple[int, Any]] = []
         for source_rank, ticker in tickers:
+            if ticker.symbol in primary_symbols:
+                eligible.append((source_rank, ticker))
+                continue
             try:
                 structure = self._get_dump_structure(ticker.symbol, ticker.price)
             except Exception as error:
@@ -225,8 +280,6 @@ class DumpScanner:
             eligible.append((source_rank, ticker))
 
         if self.source == "BYBIT":
-            with DEEP_CANDIDATES_LOCK:
-                primary_symbols = set(BINANCE_DEEP_CANDIDATES)
             primary = [item for item in eligible if item[1].symbol in primary_symbols]
             remaining = [item for item in eligible if item[1].symbol not in primary_symbols]
             selected = (primary + remaining)[: self.settings.dump_deep_max_symbols]
@@ -291,10 +344,20 @@ class DumpScanner:
 
         raw_tickers = list(self.client.get_linear_tickers())
         raw_tickers.sort(key=lambda item: item.turnover_24h, reverse=True)
+        self._record_bybit_execution_quotes(now, raw_tickers)
+        with DEEP_CANDIDATES_LOCK:
+            primary_symbols = set(BINANCE_DEEP_CANDIDATES)
         ranked_tickers = [
             (source_rank, ticker)
             for source_rank, ticker in enumerate(raw_tickers, start=1)
-            if self._has_minimum_market_data(ticker)
+            if (
+                self._has_minimum_market_data(ticker)
+                or (
+                    ticker.symbol in primary_symbols
+                    and ticker.price > 0
+                    and ticker.high_price_24h > 0
+                )
+            )
             and getattr(ticker, "open_interest", 0) > 0
         ]
         return self._select_top_ranked(now, ranked_tickers, rejection_reasons)
@@ -305,14 +368,28 @@ class DumpScanner:
         ranked_tickers: list[tuple[int, Any]],
         rejection_reasons: dict[str, int],
     ) -> list[tuple[int, Any]]:
-        selected = ranked_tickers[: self.settings.dump_max_symbols]
+        if self.source == "BYBIT":
+            with DEEP_CANDIDATES_LOCK:
+                primary_symbols = set(BINANCE_DEEP_CANDIDATES)
+            primary = [item for item in ranked_tickers if item[1].symbol in primary_symbols]
+            if self.settings.dump_cross_exchange_required:
+                return primary[: self.settings.dump_max_symbols]
+            remaining = [
+                item for item in ranked_tickers if item[1].symbol not in primary_symbols
+            ]
+            selected = (primary + remaining)[: self.settings.dump_max_symbols]
+        else:
+            selected = ranked_tickers[: self.settings.dump_max_symbols]
         if self.history is not None:
             self.history.record_pending_signal_prices(
                 signal_type=f"dump_{self.source.lower()}",
                 prices={ticker.symbol: ticker.price for _, ticker in ranked_tickers},
                 ts=now,
             )
-        outside = ranked_tickers[self.settings.dump_max_symbols :]
+        selected_symbols = {ticker.symbol for _, ticker in selected}
+        outside = [
+            item for item in ranked_tickers if item[1].symbol not in selected_symbols
+        ]
         if outside:
             rejection_reasons["outside_top_symbols"] = (
                 rejection_reasons.get("outside_top_symbols", 0) + len(outside)
@@ -327,6 +404,27 @@ class DumpScanner:
                     missing_checks=[f"top_{self.settings.dump_max_symbols}"],
                 )
         return selected
+
+    def _record_bybit_execution_quotes(self, now: int, tickers: list[Ticker]) -> None:
+        if self.history is None:
+            return
+        quotes = {
+            ticker.symbol: (ticker.bid_price, ticker.ask_price)
+            for ticker in tickers
+            if ticker.bid_price > 0
+            and ticker.ask_price > 0
+            and ticker.ask_price >= ticker.bid_price
+        }
+        quote_ts = max((ticker.quote_ts for ticker in tickers), default=0) or now
+        try:
+            self.history.record_pending_signal_quotes(
+                quotes=quotes,
+                ts=quote_ts,
+                venue="BYBIT",
+                model_version=DUMP_MODEL_VERSION,
+            )
+        except Exception as error:
+            print(f"BYBIT execution quote history write failed: {error}", flush=True)
 
     def _allowed_symbols(self) -> set[str] | None:
         if self.allowed_symbols_provider is None:
@@ -506,23 +604,6 @@ class DumpScanner:
             )
             return None, None
 
-        structure = self._get_dump_structure(ticker.symbol, ticker.price)
-        if structure is None:
-            count_reason(rejection_reasons, "no_dump_structure")
-            self._record_signal_evaluation(
-                now=now,
-                ticker=ticker,
-                source_rank=source_rank,
-                status="rejected",
-                reason="no_dump_structure",
-                score=0,
-                turnover_24h=self._turnover(ticker),
-                funding_rate=current.funding,
-                missing_checks=["dump_structure"],
-            )
-            return None, None
-
-        price_growth_lookback_pct, drawdown_from_high_pct, high_price = structure
         oi_available = previous.oi > 0 and current.oi > 0
         oi_change_pct = pct_change(previous.oi, current.oi) if oi_available else 0.0
         cvd_delta = current.cvd - previous.cvd
@@ -539,9 +620,59 @@ class DumpScanner:
             oi_change_pct=oi_change_pct,
             cvd_delta_usdt=cvd_delta,
             cvd_complete=cvd_complete,
+            cvd_coverage_seconds=(
+                max(0, current.ts - previous.ts)
+                if cvd_complete and current.cvd_generation == previous.cvd_generation
+                else 0
+            ),
         )
         partner = self._publish_and_get_partner(evidence)
         cross_exchange_ok = self._cross_exchange_ok(evidence, partner)
+
+        if self.source == "BYBIT" and self.settings.dump_cross_exchange_required:
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="evidence",
+                reason="binance_candidate_evidence",
+                score=0,
+                turnover_24h=turnover_24h,
+                oi_change_pct=oi_change_pct,
+                cvd_delta_usdt=cvd_delta,
+                price_change_window_pct=price_change_window_pct,
+                funding_rate=current.funding,
+                passed_checks=[
+                    name
+                    for name, passed in {
+                        "price_dropping": price_change_window_pct
+                        <= -self.settings.dump_min_price_drop_window_pct,
+                        "sell_cvd": cvd_delta < 0,
+                        "cvd_complete": cvd_complete,
+                        "oi_available": oi_available,
+                    }.items()
+                    if passed
+                ],
+            )
+            return None, None
+
+        structure = self._get_dump_structure(ticker.symbol, ticker.price)
+        if structure is None:
+            count_reason(rejection_reasons, "no_dump_structure")
+            self._record_signal_evaluation(
+                now=now,
+                ticker=ticker,
+                source_rank=source_rank,
+                status="rejected",
+                reason="no_dump_structure",
+                score=0,
+                turnover_24h=turnover_24h,
+                funding_rate=current.funding,
+                missing_checks=["dump_structure"],
+            )
+            return None, None
+
+        price_growth_lookback_pct, drawdown_from_high_pct, high_price = structure
 
         checks = {
             "volume": turnover_24h >= self.settings.dump_min_turnover_24h_usdt,
@@ -684,6 +815,17 @@ class DumpScanner:
                 cvd_delta_1h=cvd_delta,
             ),
             funding_available=funding_available,
+            market_observed_ts=current.ts,
+            decision_ts=int(time.time()),
+            confirmation_age_seconds=(
+                abs(current.ts - partner.ts) if partner is not None else 0
+            ),
+            cvd_complete=cvd_complete,
+            confirmation_cvd_complete=(partner.cvd_complete if partner is not None else False),
+            cvd_coverage_seconds=evidence.cvd_coverage_seconds,
+            confirmation_cvd_coverage_seconds=(
+                partner.cvd_coverage_seconds if partner is not None else 0
+            ),
         )
         self._record_signal_evaluation(
             now=now,
@@ -816,10 +958,12 @@ class DumpScanner:
 
     def _find_window_snapshot(self, now: int, state: SymbolState) -> Snapshot | None:
         target = now - self.settings.dump_window_minutes * 60
+        max_lag_seconds = max(300, self.settings.dump_scan_interval_seconds * 3)
         candidates = [
             snapshot
             for snapshot in state.snapshots
-            if snapshot.ts <= target and snapshot.cvd_generation == state.cvd_generation
+            if target - max_lag_seconds <= snapshot.ts <= target
+            and snapshot.cvd_generation == state.cvd_generation
         ]
         if not candidates:
             return None

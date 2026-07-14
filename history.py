@@ -7,8 +7,9 @@ import sqlite3
 import time
 
 
-REVIEW_SCHEMA_VERSION = "scanner-filtered-v3-15-30-60-240"
-REVIEW_METRICS_VERSION = "entry-baseline-v1"
+HISTORY_SCHEMA_VERSION = "scanner-history-v5.1-measurement"
+REVIEW_SCHEMA_VERSION = "exact-post-target-v1-15-30-60-240"
+REVIEW_METRICS_VERSION = "bybit-bid-ask-v1"
 
 
 class HistoryStore:
@@ -86,7 +87,30 @@ class HistoryStore:
                     price_change_pct REAL NOT NULL,
                     payload TEXT NOT NULL,
                     model_version TEXT NOT NULL DEFAULT '',
-                    settings_snapshot TEXT NOT NULL DEFAULT '{}'
+                    settings_snapshot TEXT NOT NULL DEFAULT '{}',
+                    market_observed_ts INTEGER NOT NULL DEFAULT 0,
+                    decision_ts INTEGER NOT NULL DEFAULT 0,
+                    telegram_sent_ts INTEGER NOT NULL DEFAULT 0,
+                    market_price REAL NOT NULL DEFAULT 0,
+                    entry_quote_ts INTEGER NOT NULL DEFAULT 0,
+                    entry_bid REAL NOT NULL DEFAULT 0,
+                    entry_ask REAL NOT NULL DEFAULT 0,
+                    entry_price REAL NOT NULL DEFAULT 0,
+                    entry_spread_bps REAL NOT NULL DEFAULT 0,
+                    entry_quote_status TEXT NOT NULL DEFAULT 'legacy',
+                    execution_venue TEXT NOT NULL DEFAULT '',
+                    detection_source TEXT NOT NULL DEFAULT '',
+                    mode TEXT NOT NULL DEFAULT '',
+                    score INTEGER NOT NULL DEFAULT 0,
+                    turnover_24h REAL NOT NULL DEFAULT 0,
+                    confirmation_age_seconds INTEGER NOT NULL DEFAULT 0,
+                    cvd_complete INTEGER NOT NULL DEFAULT 0,
+                    confirmation_cvd_complete INTEGER NOT NULL DEFAULT 0,
+                    cvd_coverage_seconds INTEGER NOT NULL DEFAULT 0,
+                    confirmation_cvd_coverage_seconds INTEGER NOT NULL DEFAULT 0,
+                    build_commit TEXT NOT NULL DEFAULT '',
+                    config_hash TEXT NOT NULL DEFAULT '',
+                    schema_version TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -101,6 +125,12 @@ class HistoryStore:
                     move_pct REAL NOT NULL,
                     max_favorable_pct REAL NOT NULL,
                     max_adverse_pct REAL NOT NULL,
+                    target_ts INTEGER NOT NULL DEFAULT 0,
+                    price_ts INTEGER NOT NULL DEFAULT 0,
+                    lag_seconds INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'legacy',
+                    missing_reason TEXT NOT NULL DEFAULT '',
+                    execution_venue TEXT NOT NULL DEFAULT '',
                     UNIQUE(signal_id, horizon_minutes)
                 )
                 """
@@ -117,6 +147,10 @@ class HistoryStore:
                     signal_id INTEGER NOT NULL,
                     ts INTEGER NOT NULL,
                     price REAL NOT NULL,
+                    venue TEXT NOT NULL DEFAULT '',
+                    bid REAL NOT NULL DEFAULT 0,
+                    ask REAL NOT NULL DEFAULT 0,
+                    quote_status TEXT NOT NULL DEFAULT 'legacy',
                     UNIQUE(signal_id, ts)
                 )
                 """
@@ -125,6 +159,29 @@ class HistoryStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_signal_price_snapshots_signal_ts
                 ON signal_price_snapshots(signal_id, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS signal_entry_scenarios (
+                    signal_id INTEGER NOT NULL,
+                    delay_seconds INTEGER NOT NULL,
+                    target_ts INTEGER NOT NULL,
+                    quote_ts INTEGER NOT NULL DEFAULT 0,
+                    bid REAL NOT NULL DEFAULT 0,
+                    ask REAL NOT NULL DEFAULT 0,
+                    spread_bps REAL NOT NULL DEFAULT 0,
+                    lag_seconds INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    error TEXT NOT NULL DEFAULT '',
+                    UNIQUE(signal_id, delay_seconds)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_signal_entry_scenarios_signal
+                ON signal_entry_scenarios(signal_id, delay_seconds)
                 """
             )
             conn.execute(
@@ -281,6 +338,84 @@ class HistoryStore:
                 column="settings_snapshot",
                 definition="TEXT NOT NULL DEFAULT '{}'",
             )
+            signal_columns = {
+                "market_observed_ts": "INTEGER NOT NULL DEFAULT 0",
+                "decision_ts": "INTEGER NOT NULL DEFAULT 0",
+                "telegram_sent_ts": "INTEGER NOT NULL DEFAULT 0",
+                "market_price": "REAL NOT NULL DEFAULT 0",
+                "entry_quote_ts": "INTEGER NOT NULL DEFAULT 0",
+                "entry_bid": "REAL NOT NULL DEFAULT 0",
+                "entry_ask": "REAL NOT NULL DEFAULT 0",
+                "entry_price": "REAL NOT NULL DEFAULT 0",
+                "entry_spread_bps": "REAL NOT NULL DEFAULT 0",
+                "entry_quote_status": "TEXT NOT NULL DEFAULT 'legacy'",
+                "execution_venue": "TEXT NOT NULL DEFAULT ''",
+                "detection_source": "TEXT NOT NULL DEFAULT ''",
+                "mode": "TEXT NOT NULL DEFAULT ''",
+                "score": "INTEGER NOT NULL DEFAULT 0",
+                "turnover_24h": "REAL NOT NULL DEFAULT 0",
+                "confirmation_age_seconds": "INTEGER NOT NULL DEFAULT 0",
+                "cvd_complete": "INTEGER NOT NULL DEFAULT 0",
+                "confirmation_cvd_complete": "INTEGER NOT NULL DEFAULT 0",
+                "cvd_coverage_seconds": "INTEGER NOT NULL DEFAULT 0",
+                "confirmation_cvd_coverage_seconds": "INTEGER NOT NULL DEFAULT 0",
+                "build_commit": "TEXT NOT NULL DEFAULT ''",
+                "config_hash": "TEXT NOT NULL DEFAULT ''",
+                "schema_version": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in signal_columns.items():
+                self._ensure_column(
+                    conn,
+                    table="signals",
+                    column=column,
+                    definition=definition,
+                )
+            review_columns = {
+                "target_ts": "INTEGER NOT NULL DEFAULT 0",
+                "price_ts": "INTEGER NOT NULL DEFAULT 0",
+                "lag_seconds": "INTEGER NOT NULL DEFAULT 0",
+                "status": "TEXT NOT NULL DEFAULT 'legacy'",
+                "missing_reason": "TEXT NOT NULL DEFAULT ''",
+                "execution_venue": "TEXT NOT NULL DEFAULT ''",
+            }
+            for column, definition in review_columns.items():
+                self._ensure_column(
+                    conn,
+                    table="signal_reviews",
+                    column=column,
+                    definition=definition,
+                )
+            snapshot_columns = {
+                "venue": "TEXT NOT NULL DEFAULT ''",
+                "bid": "REAL NOT NULL DEFAULT 0",
+                "ask": "REAL NOT NULL DEFAULT 0",
+                "quote_status": "TEXT NOT NULL DEFAULT 'legacy'",
+            }
+            for column, definition in snapshot_columns.items():
+                self._ensure_column(
+                    conn,
+                    table="signal_price_snapshots",
+                    column=column,
+                    definition=definition,
+                )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_signals_model_version_ts
+                ON signals(model_version, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_signal_price_snapshots_venue_ts
+                ON signal_price_snapshots(signal_id, venue, ts)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_signal_reviews_status
+                ON signal_reviews(status, horizon_minutes)
+                """
+            )
             self._ensure_column(
                 conn,
                 table="scanner_evaluations",
@@ -289,6 +424,13 @@ class HistoryStore:
             )
             self._migrate_signal_reviews(conn)
             self._migrate_review_metrics(conn)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO app_meta (key, value)
+                VALUES ('history_schema_version', ?)
+                """,
+                (HISTORY_SCHEMA_VERSION,),
+            )
 
     @staticmethod
     def _ensure_column(
@@ -311,7 +453,6 @@ class HistoryStore:
         if current_version == REVIEW_SCHEMA_VERSION:
             return
 
-        conn.execute("DELETE FROM signal_reviews")
         conn.execute(
             """
             INSERT OR REPLACE INTO app_meta (key, value)
@@ -445,43 +586,140 @@ class HistoryStore:
         payload: str,
         model_version: str = "",
         settings_snapshot: str = "{}",
+        market_observed_ts: int = 0,
+        decision_ts: int = 0,
+        telegram_sent_ts: int = 0,
+        market_price: float = 0.0,
+        entry_quote_ts: int = 0,
+        entry_bid: float = 0.0,
+        entry_ask: float = 0.0,
+        entry_price: float = 0.0,
+        entry_spread_bps: float = 0.0,
+        entry_quote_status: str = "legacy",
+        execution_venue: str = "",
+        detection_source: str = "",
+        mode: str = "",
+        score: int = 0,
+        turnover_24h: float = 0.0,
+        confirmation_age_seconds: int = 0,
+        cvd_complete: bool = False,
+        confirmation_cvd_complete: bool = False,
+        cvd_coverage_seconds: int = 0,
+        confirmation_cvd_coverage_seconds: int = 0,
+        build_commit: str = "",
+        config_hash: str = "",
+        schema_version: str = HISTORY_SCHEMA_VERSION,
         ts: int | None = None,
     ) -> int:
         ts = ts or int(time.time())
+        market_price = market_price if market_price > 0 else price
+        entry_price = entry_price if entry_price > 0 else price
+        entry_bid = entry_bid if entry_bid > 0 else entry_price
+        entry_ask = entry_ask if entry_ask > 0 else entry_price
+        entry_quote_ts = entry_quote_ts or ts
+        telegram_sent_ts = telegram_sent_ts or ts
+        market_observed_ts = market_observed_ts or ts
+        decision_ts = decision_ts or ts
+        columns = (
+            "signal_type",
+            "symbol",
+            "ts",
+            "price",
+            "open_interest_change_pct",
+            "futures_cvd_change_pct",
+            "futures_cvd_delta_usdt",
+            "spot_cvd_change_pct",
+            "spot_cvd_delta_usdt",
+            "price_change_pct",
+            "payload",
+            "model_version",
+            "settings_snapshot",
+            "market_observed_ts",
+            "decision_ts",
+            "telegram_sent_ts",
+            "market_price",
+            "entry_quote_ts",
+            "entry_bid",
+            "entry_ask",
+            "entry_price",
+            "entry_spread_bps",
+            "entry_quote_status",
+            "execution_venue",
+            "detection_source",
+            "mode",
+            "score",
+            "turnover_24h",
+            "confirmation_age_seconds",
+            "cvd_complete",
+            "confirmation_cvd_complete",
+            "cvd_coverage_seconds",
+            "confirmation_cvd_coverage_seconds",
+            "build_commit",
+            "config_hash",
+            "schema_version",
+        )
+        values = (
+            signal_type,
+            symbol,
+            ts,
+            price,
+            open_interest_change_pct,
+            futures_cvd_change_pct,
+            futures_cvd_delta_usdt,
+            spot_cvd_change_pct,
+            spot_cvd_delta_usdt,
+            price_change_pct,
+            payload,
+            model_version,
+            settings_snapshot,
+            market_observed_ts,
+            decision_ts,
+            telegram_sent_ts,
+            market_price,
+            entry_quote_ts,
+            entry_bid,
+            entry_ask,
+            entry_price,
+            entry_spread_bps,
+            entry_quote_status,
+            execution_venue,
+            detection_source,
+            mode,
+            score,
+            turnover_24h,
+            confirmation_age_seconds,
+            int(cvd_complete),
+            int(confirmation_cvd_complete),
+            cvd_coverage_seconds,
+            confirmation_cvd_coverage_seconds,
+            build_commit,
+            config_hash,
+            schema_version,
+        )
         with self._connect() as conn:
             cursor = conn.execute(
-                """
-                INSERT INTO signals (
-                    signal_type, symbol, ts, price, open_interest_change_pct,
-                    futures_cvd_change_pct, futures_cvd_delta_usdt,
-                    spot_cvd_change_pct, spot_cvd_delta_usdt,
-                    price_change_pct, payload, model_version, settings_snapshot
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    signal_type,
-                    symbol,
-                    ts,
-                    price,
-                    open_interest_change_pct,
-                    futures_cvd_change_pct,
-                    futures_cvd_delta_usdt,
-                    spot_cvd_change_pct,
-                    spot_cvd_delta_usdt,
-                    price_change_pct,
-                    payload,
-                    model_version,
-                    settings_snapshot,
-                ),
+                f"INSERT INTO signals ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                values,
             )
             signal_id = int(cursor.lastrowid)
+            snapshot_price = entry_ask if entry_quote_status == "ok" else entry_price
             conn.execute(
                 """
-                INSERT OR IGNORE INTO signal_price_snapshots (signal_id, ts, price)
-                VALUES (?, ?, ?)
+                INSERT OR IGNORE INTO signal_price_snapshots (
+                    signal_id, ts, price, venue, bid, ask, quote_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (signal_id, ts, price),
+                (
+                    signal_id,
+                    entry_quote_ts,
+                    snapshot_price,
+                    execution_venue,
+                    entry_bid,
+                    entry_ask,
+                    entry_quote_status,
+                ),
             )
             return signal_id
 
@@ -502,7 +740,9 @@ class HistoryStore:
                 """
                 SELECT id, symbol
                 FROM signals
-                WHERE signal_type = ? AND ts >= ?
+                WHERE signal_type = ?
+                  AND ts >= ?
+                  AND entry_quote_status != 'ok'
                 """,
                 (signal_type, cutoff),
             ).fetchall()
@@ -521,6 +761,107 @@ class HistoryStore:
                 if cursor.rowcount == 1:
                     inserted += 1
         return inserted
+
+    def record_pending_signal_quotes(
+        self,
+        *,
+        quotes: dict[str, tuple[float, float]],
+        ts: int,
+        venue: str = "BYBIT",
+        signal_types: tuple[str, ...] = ("dump_binance", "dump_bybit"),
+        model_version: str | None = None,
+        max_horizon_minutes: int = 240,
+    ) -> int:
+        if not quotes or not signal_types:
+            return 0
+        cutoff = ts - max_horizon_minutes * 60
+        placeholders = ", ".join("?" for _ in signal_types)
+        query = f"""
+            SELECT id, symbol
+            FROM signals
+            WHERE signal_type IN ({placeholders})
+              AND ts >= ?
+              AND execution_venue = ?
+              AND entry_quote_status = 'ok'
+        """
+        params: list[object] = [*signal_types, cutoff, venue]
+        if model_version is not None:
+            query += " AND model_version = ?"
+            params.append(model_version)
+
+        inserted = 0
+        with self._connect() as conn:
+            signals = conn.execute(query, params).fetchall()
+            for signal_id, stored_symbol in signals:
+                bare_symbol = str(stored_symbol).split(":", 1)[-1]
+                quote = quotes.get(bare_symbol)
+                if quote is None:
+                    continue
+                bid, ask = quote
+                if bid <= 0 or ask <= 0 or ask < bid:
+                    continue
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO signal_price_snapshots (
+                        signal_id, ts, price, venue, bid, ask, quote_status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'ok')
+                    """,
+                    (signal_id, ts, ask, venue, bid, ask),
+                )
+                if cursor.rowcount == 1:
+                    inserted += 1
+        return inserted
+
+    def record_entry_quote_scenario(
+        self,
+        *,
+        signal_id: int,
+        delay_seconds: int,
+        target_ts: int,
+        quote_ts: int = 0,
+        bid: float = 0.0,
+        ask: float = 0.0,
+        spread_bps: float = 0.0,
+        status: str,
+        error: str = "",
+    ) -> bool:
+        lag_seconds = quote_ts - target_ts if quote_ts > 0 else 0
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO signal_entry_scenarios (
+                    signal_id, delay_seconds, target_ts, quote_ts,
+                    bid, ask, spread_bps, lag_seconds, status, error
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    signal_id,
+                    delay_seconds,
+                    target_ts,
+                    quote_ts,
+                    bid,
+                    ask,
+                    spread_bps,
+                    lag_seconds,
+                    status,
+                    error[:300],
+                ),
+            )
+            if cursor.rowcount != 1:
+                return False
+            if status == "ok" and quote_ts > 0 and bid > 0 and ask >= bid:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO signal_price_snapshots (
+                        signal_id, ts, price, venue, bid, ask, quote_status
+                    )
+                    VALUES (?, ?, ?, 'BYBIT', ?, ?, 'ok')
+                    """,
+                    (signal_id, quote_ts, ask, bid, ask),
+                )
+            return True
 
     def claim_dump_symbol_alert(
         self,
@@ -621,13 +962,18 @@ class HistoryStore:
         *,
         now: int | None = None,
         horizons_minutes: tuple[int, ...] = (15, 30, 60, 240),
+        max_lag_seconds: int = 300,
     ) -> int:
         now = now or int(time.time())
+        max_lag_seconds = max(0, max_lag_seconds)
         reviewed = 0
         with self._connect() as conn:
             signals = conn.execute(
                 """
-                SELECT id, signal_type, symbol, ts, price
+                SELECT
+                    id, signal_type, symbol, ts, price, model_version,
+                    entry_price, entry_quote_ts, entry_quote_status,
+                    execution_venue, telegram_sent_ts
                 FROM signals
                 WHERE ts <= ?
                 ORDER BY ts ASC
@@ -635,13 +981,33 @@ class HistoryStore:
                 (now - min(horizons_minutes) * 60,),
             ).fetchall()
 
-            for signal_id, signal_type, symbol, signal_ts, entry_price in signals:
+            for (
+                signal_id,
+                signal_type,
+                symbol,
+                signal_ts,
+                legacy_price,
+                _model_version,
+                stored_entry_price,
+                entry_quote_ts,
+                entry_quote_status,
+                execution_venue,
+                telegram_sent_ts,
+            ) in signals:
                 scanner = _scanner_for_signal_type(signal_type)
                 if scanner is None:
                     continue
+                entry_price = stored_entry_price if stored_entry_price > 0 else legacy_price
+                review_start_ts = telegram_sent_ts or signal_ts
+                series_start_ts = entry_quote_ts or review_start_ts
+                exact_review = (
+                    entry_quote_status == "ok"
+                    and execution_venue == "BYBIT"
+                    and entry_price > 0
+                )
 
                 for horizon_minutes in horizons_minutes:
-                    target_ts = signal_ts + horizon_minutes * 60
+                    target_ts = review_start_ts + horizon_minutes * 60
                     if target_ts > now:
                         continue
                     exists = conn.execute(
@@ -655,6 +1021,106 @@ class HistoryStore:
                     if exists:
                         continue
 
+                    if exact_review:
+                        target_snapshot = conn.execute(
+                            """
+                            SELECT ts, price
+                            FROM signal_price_snapshots
+                            WHERE signal_id = ?
+                              AND venue = ?
+                              AND quote_status = 'ok'
+                              AND ts >= ?
+                              AND ts <= ?
+                            ORDER BY ts ASC
+                            LIMIT 1
+                            """,
+                            (
+                                signal_id,
+                                execution_venue,
+                                target_ts,
+                                target_ts + max_lag_seconds,
+                            ),
+                        ).fetchone()
+                        if target_snapshot is None:
+                            if now < target_ts + max_lag_seconds:
+                                continue
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO signal_reviews (
+                                    signal_id, horizon_minutes, reviewed_ts,
+                                    price_at_review, move_pct, max_favorable_pct,
+                                    max_adverse_pct, target_ts, price_ts,
+                                    lag_seconds, status, missing_reason,
+                                    execution_venue
+                                )
+                                VALUES (?, ?, ?, 0, 0, 0, 0, ?, 0, 0, 'missing', ?, ?)
+                                """,
+                                (
+                                    signal_id,
+                                    horizon_minutes,
+                                    now,
+                                    target_ts,
+                                    "no_bybit_quote_within_lag",
+                                    execution_venue,
+                                ),
+                            )
+                            reviewed += 1
+                            continue
+
+                        price_ts, price_at_review = target_snapshot
+                        snapshots = conn.execute(
+                            """
+                            SELECT ts, price
+                            FROM signal_price_snapshots
+                            WHERE signal_id = ?
+                              AND venue = ?
+                              AND quote_status = 'ok'
+                              AND ts >= ?
+                              AND ts <= ?
+                            ORDER BY ts ASC
+                            """,
+                            (
+                                signal_id,
+                                execution_venue,
+                                series_start_ts,
+                                price_ts,
+                            ),
+                        ).fetchall()
+                        prices = [row[1] for row in snapshots] or [price_at_review]
+                        move_pct, max_favorable_pct, max_adverse_pct = _review_metrics(
+                            signal_type=signal_type,
+                            entry_price=entry_price,
+                            price_at_review=price_at_review,
+                            prices=prices,
+                        )
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO signal_reviews (
+                                signal_id, horizon_minutes, reviewed_ts,
+                                price_at_review, move_pct, max_favorable_pct,
+                                max_adverse_pct, target_ts, price_ts,
+                                lag_seconds, status, missing_reason,
+                                execution_venue
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', '', ?)
+                            """,
+                            (
+                                signal_id,
+                                horizon_minutes,
+                                now,
+                                price_at_review,
+                                move_pct,
+                                max_favorable_pct,
+                                max_adverse_pct,
+                                target_ts,
+                                price_ts,
+                                price_ts - target_ts,
+                                execution_venue,
+                            ),
+                        )
+                        reviewed += 1
+                        continue
+
                     snapshots = conn.execute(
                         """
                         SELECT ts, price
@@ -666,18 +1132,18 @@ class HistoryStore:
                     ).fetchall()
                     if not snapshots:
                         snapshots = conn.execute(
-                        """
-                        SELECT ts, price
-                        FROM market_snapshots
-                        WHERE scanner = ? AND symbol = ? AND ts >= ? AND ts <= ?
-                        ORDER BY ts ASC
-                        """,
-                        (scanner, symbol, signal_ts, target_ts),
+                            """
+                            SELECT ts, price
+                            FROM market_snapshots
+                            WHERE scanner = ? AND symbol = ? AND ts >= ? AND ts <= ?
+                            ORDER BY ts ASC
+                            """,
+                            (scanner, symbol, signal_ts, target_ts),
                         ).fetchall()
                     if not snapshots:
                         continue
 
-                    price_at_review = snapshots[-1][1]
+                    price_ts, price_at_review = snapshots[-1]
                     prices = [row[1] for row in snapshots]
                     move_pct, max_favorable_pct, max_adverse_pct = _review_metrics(
                         signal_type=signal_type,
@@ -689,9 +1155,11 @@ class HistoryStore:
                         """
                         INSERT OR IGNORE INTO signal_reviews (
                             signal_id, horizon_minutes, reviewed_ts, price_at_review,
-                            move_pct, max_favorable_pct, max_adverse_pct
+                            move_pct, max_favorable_pct, max_adverse_pct,
+                            target_ts, price_ts, lag_seconds, status,
+                            missing_reason, execution_venue
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'legacy', '', ?)
                         """,
                         (
                             signal_id,
@@ -701,16 +1169,25 @@ class HistoryStore:
                             move_pct,
                             max_favorable_pct,
                             max_adverse_pct,
+                            target_ts,
+                            price_ts,
+                            target_ts - price_ts,
+                            execution_venue,
                         ),
                     )
                     reviewed += 1
 
         return reviewed
 
-    def get_signal_stats(self) -> list[tuple]:
+    def get_signal_stats(self, model_version: str | None = None) -> list[tuple]:
+        where = "WHERE r.status IN ('ok', 'legacy')"
+        params: tuple[object, ...] = ()
+        if model_version is not None:
+            where += " AND s.model_version = ?"
+            params = (model_version,)
         with self._connect() as conn:
             return conn.execute(
-                """
+                f"""
                 SELECT
                     s.signal_type,
                     r.horizon_minutes,
@@ -721,21 +1198,82 @@ class HistoryStore:
                     SUM(CASE WHEN r.move_pct > 0 THEN 1 ELSE 0 END) AS positive_count
                 FROM signal_reviews r
                 JOIN signals s ON s.id = r.signal_id
+                {where}
                 GROUP BY s.signal_type, r.horizon_minutes
                 ORDER BY s.signal_type, r.horizon_minutes
-                """
+                """,
+                params,
             ).fetchall()
 
-    def get_recent_signals(self, limit: int = 5) -> list[tuple]:
+    def get_review_quality(self, model_version: str | None = None) -> list[tuple]:
+        where = ""
+        params: tuple[object, ...] = ()
+        if model_version is not None:
+            where = "WHERE s.model_version = ?"
+            params = (model_version,)
         with self._connect() as conn:
             return conn.execute(
-                """
-                SELECT id, signal_type, symbol, ts, price, price_change_pct
+                f"""
+                SELECT
+                    r.status,
+                    COUNT(*) AS total,
+                    AVG(CASE WHEN r.status = 'ok' THEN r.lag_seconds END) AS avg_lag_seconds
+                FROM signal_reviews r
+                JOIN signals s ON s.id = r.signal_id
+                {where}
+                GROUP BY r.status
+                ORDER BY r.status
+                """,
+                params,
+            ).fetchall()
+
+    def get_entry_scenario_stats(self, model_version: str | None = None) -> list[tuple]:
+        where = "WHERE q.status = 'ok' AND s.entry_price > 0"
+        params: tuple[object, ...] = ()
+        if model_version is not None:
+            where += " AND s.model_version = ?"
+            params = (model_version,)
+        with self._connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT
+                    q.delay_seconds,
+                    COUNT(*) AS total,
+                    AVG(((s.entry_price - q.bid) / s.entry_price) * 100) AS avg_bid_drift_pct,
+                    AVG(q.spread_bps) AS avg_spread_bps
+                FROM signal_entry_scenarios q
+                JOIN signals s ON s.id = q.signal_id
+                {where}
+                GROUP BY q.delay_seconds
+                ORDER BY q.delay_seconds
+                """,
+                params,
+            ).fetchall()
+
+    def get_recent_signals(
+        self,
+        limit: int = 5,
+        model_version: str | None = None,
+    ) -> list[tuple]:
+        where = ""
+        params: list[object] = []
+        if model_version is not None:
+            where = "WHERE model_version = ?"
+            params.append(model_version)
+        params.append(limit)
+        with self._connect() as conn:
+            return conn.execute(
+                f"""
+                SELECT
+                    id, signal_type, symbol, ts,
+                    CASE WHEN entry_price > 0 THEN entry_price ELSE price END,
+                    price_change_pct
                 FROM signals
+                {where}
                 ORDER BY ts DESC
                 LIMIT ?
                 """,
-                (limit,),
+                params,
             ).fetchall()
 
     def get_market_snapshots(
