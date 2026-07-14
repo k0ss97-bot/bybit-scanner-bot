@@ -190,6 +190,21 @@ class Settings:
     dump_execution_quote_max_age_seconds: int
     dump_entry_quote_delays_seconds: tuple[int, ...]
     dump_review_max_lag_seconds: int
+    paper_trading_enabled: bool
+    paper_poll_interval_seconds: int
+    paper_starting_equity_usdt: float
+    paper_risk_per_trade_pct: float
+    paper_max_notional_pct: float
+    paper_max_open_positions: int
+    paper_episode_cooldown_minutes: int
+    paper_stop_loss_pct: float
+    paper_max_holding_minutes: int
+    paper_trailing_activation_pct: float
+    paper_trailing_distance_pct: float
+    paper_entry_fee_bps: float
+    paper_exit_fee_bps: float
+    paper_slippage_bps: float
+    paper_funding_buffer_bps: float
     dump_liquidation_min_oi_drop_pct: float
     dump_trend_min_oi_change_pct: float
     dump_chart_enabled: bool
@@ -371,6 +386,45 @@ def get_settings() -> Settings:
             (5, 15, 30),
         ),
         dump_review_max_lag_seconds=_int("DUMP_REVIEW_MAX_LAG_SECONDS", 300),
+        paper_trading_enabled=_bool("PAPER_TRADING_ENABLED", True),
+        paper_poll_interval_seconds=max(5, _int("PAPER_POLL_INTERVAL_SECONDS", 15)),
+        paper_starting_equity_usdt=max(
+            1,
+            _float("PAPER_STARTING_EQUITY_USDT", 10000),
+        ),
+        paper_risk_per_trade_pct=max(
+            0.01,
+            _float("PAPER_RISK_PER_TRADE_PCT", 0.5),
+        ),
+        paper_max_notional_pct=max(
+            0.1,
+            _float("PAPER_MAX_NOTIONAL_PCT", 25),
+        ),
+        paper_max_open_positions=max(1, _int("PAPER_MAX_OPEN_POSITIONS", 3)),
+        paper_episode_cooldown_minutes=max(
+            0,
+            _int("PAPER_EPISODE_COOLDOWN_MINUTES", 30),
+        ),
+        paper_stop_loss_pct=max(0.1, _float("PAPER_STOP_LOSS_PCT", 2)),
+        paper_max_holding_minutes=max(
+            15,
+            _int("PAPER_MAX_HOLDING_MINUTES", 240),
+        ),
+        paper_trailing_activation_pct=max(
+            0.1,
+            _float("PAPER_TRAILING_ACTIVATION_PCT", 2),
+        ),
+        paper_trailing_distance_pct=max(
+            0.1,
+            _float("PAPER_TRAILING_DISTANCE_PCT", 1.5),
+        ),
+        paper_entry_fee_bps=max(0, _float("PAPER_ENTRY_FEE_BPS", 5.5)),
+        paper_exit_fee_bps=max(0, _float("PAPER_EXIT_FEE_BPS", 5.5)),
+        paper_slippage_bps=max(0, _float("PAPER_SLIPPAGE_BPS", 5)),
+        paper_funding_buffer_bps=max(
+            0,
+            _float("PAPER_FUNDING_BUFFER_BPS", 1),
+        ),
         dump_liquidation_min_oi_drop_pct=_float("DUMP_LIQUIDATION_MIN_OI_DROP_PCT", 1.5),
         dump_trend_min_oi_change_pct=_float("DUMP_TREND_MIN_OI_CHANGE_PCT", -0.5),
         dump_chart_enabled=_bool("DUMP_CHART_ENABLED", True),

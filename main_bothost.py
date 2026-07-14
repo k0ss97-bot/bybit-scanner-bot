@@ -17,6 +17,7 @@ from config import get_settings
 from dump_scanner import DUMP_MODEL_VERSION, DumpScanner
 from history import HISTORY_SCHEMA_VERSION, HistoryStore
 from openai_analysis import OpenAISignalAnalyzer, compose_enriched_caption
+from paper_trading import PaperBroker, format_paper_summary
 from state import StateStore
 from telegram import (
     TelegramNotifier,
@@ -53,6 +54,21 @@ DUMP_SETTINGS_SNAPSHOT_FIELDS = (
     "dump_execution_quote_max_age_seconds",
     "dump_entry_quote_delays_seconds",
     "dump_review_max_lag_seconds",
+    "paper_trading_enabled",
+    "paper_poll_interval_seconds",
+    "paper_starting_equity_usdt",
+    "paper_risk_per_trade_pct",
+    "paper_max_notional_pct",
+    "paper_max_open_positions",
+    "paper_episode_cooldown_minutes",
+    "paper_stop_loss_pct",
+    "paper_max_holding_minutes",
+    "paper_trailing_activation_pct",
+    "paper_trailing_distance_pct",
+    "paper_entry_fee_bps",
+    "paper_exit_fee_bps",
+    "paper_slippage_bps",
+    "paper_funding_buffer_bps",
     "dump_liquidation_min_oi_drop_pct",
     "dump_trend_min_oi_change_pct",
     "dump_min_price_growth_lookback_pct",
@@ -116,6 +132,7 @@ def menu_keyboard() -> dict:
             [{"text": "📊 Статус"}, {"text": "⚙️ Настройки"}],
             [{"text": "📈 Статистика"}, {"text": "❓ Почему нет сигналов"}],
             [{"text": "🎯 Ближайшие"}, {"text": "🕘 Последние сигналы"}],
+            [{"text": "🧪 Paper"}],
             [{"text": "🔻 DUMP BYBIT"}, {"text": "🔻 DUMP BINANCE"}],
             [{"text": "🤖 Тест OpenAI"}],
             [{"text": "⏸ Пауза"}, {"text": "▶️ Старт"}],
@@ -293,6 +310,7 @@ def send_signal_with_symbol_cooldown(
     ai_scheduler=None,
     execution_quote_provider=None,
     entry_quote_scheduler=None,
+    paper_broker: PaperBroker | None = None,
 ) -> bool:
     symbol = str(getattr(signal, "symbol", ""))
     now = int(time.time())
@@ -414,6 +432,24 @@ def send_signal_with_symbol_cooldown(
         config_hash=dump_config_hash(settings_snapshot),
         schema_version=HISTORY_SCHEMA_VERSION,
     )
+
+    if paper_broker is not None and paper_broker.enabled:
+        try:
+            paper_results = paper_broker.open_signal(
+                signal_id=signal_id,
+                signal=signal_for_send,
+                opened_ts=telegram_sent_ts,
+            )
+            print(
+                f"Paper {symbol}: " + ", ".join(paper_results),
+                flush=True,
+            )
+        except Exception as error:
+            print(f"Paper open failed for {symbol}: {error}", flush=True)
+            try:
+                paper_broker.record_heartbeat(loop_errors=1)
+            except Exception as heartbeat_error:
+                print(f"Paper heartbeat failed: {heartbeat_error}", flush=True)
 
     if entry_quote_scheduler is not None and execution_quote_provider is not None:
         entry_quote_scheduler(
@@ -734,6 +770,22 @@ def format_settings_message(settings) -> str:
         f"DUMP_SYMBOL_COOLDOWN_MINUTES={settings.dump_symbol_cooldown_minutes}\n"
         f"DUMP_MIN_SIGNAL_SCORE={settings.dump_min_signal_score}\n"
         f"DUMP_WATCHLIST_MIN_SCORE={settings.dump_watchlist_min_score}\n\n"
+        "Paper trading (реальные ордера отключены):\n"
+        f"PAPER_TRADING_ENABLED={str(settings.paper_trading_enabled).lower()}\n"
+        f"PAPER_POLL_INTERVAL_SECONDS={settings.paper_poll_interval_seconds}\n"
+        f"PAPER_STARTING_EQUITY_USDT={settings.paper_starting_equity_usdt:g}\n"
+        f"PAPER_RISK_PER_TRADE_PCT={settings.paper_risk_per_trade_pct:g}\n"
+        f"PAPER_MAX_NOTIONAL_PCT={settings.paper_max_notional_pct:g}\n"
+        f"PAPER_MAX_OPEN_POSITIONS={settings.paper_max_open_positions}\n"
+        f"PAPER_EPISODE_COOLDOWN_MINUTES={settings.paper_episode_cooldown_minutes}\n"
+        f"PAPER_STOP_LOSS_PCT={settings.paper_stop_loss_pct:g}\n"
+        f"PAPER_MAX_HOLDING_MINUTES={settings.paper_max_holding_minutes}\n"
+        f"PAPER_TRAILING_ACTIVATION_PCT={settings.paper_trailing_activation_pct:g}\n"
+        f"PAPER_TRAILING_DISTANCE_PCT={settings.paper_trailing_distance_pct:g}\n"
+        f"PAPER_ENTRY_FEE_BPS={settings.paper_entry_fee_bps:g}\n"
+        f"PAPER_EXIT_FEE_BPS={settings.paper_exit_fee_bps:g}\n"
+        f"PAPER_SLIPPAGE_BPS={settings.paper_slippage_bps:g}\n"
+        f"PAPER_FUNDING_BUFFER_BPS={settings.paper_funding_buffer_bps:g}\n\n"
         "Фильтры:\n"
         f"CANDIDATE_TRACKING_ENABLED={str(settings.candidate_tracking_enabled).lower()}\n"
         f"WATCHLIST_MAX_ALERTS_PER_SCAN={settings.watchlist_max_alerts_per_scan}\n"
@@ -980,6 +1032,15 @@ def is_stats_request(text: str) -> bool:
     return text.startswith("/stats") or text in {"статистика", "📈 статистика"}
 
 
+def is_paper_request(text: str) -> bool:
+    return text.startswith("/paper") or text in {
+        "paper",
+        "paper trading",
+        "🧪 paper",
+        "виртуальные сделки",
+    }
+
+
 def is_rejections_request(text: str) -> bool:
     return (
         text.startswith("/why")
@@ -1137,6 +1198,7 @@ def run_status_loop() -> None:
         return
 
     ai_analyzer = build_openai_analyzer(settings)
+    paper_broker = PaperBroker(data_path("scanner.db"), settings)
     raw_offset = history.get_app_meta(TELEGRAM_OFFSET_META_KEY, "")
     try:
         offset = int(raw_offset) if raw_offset else None
@@ -1177,6 +1239,12 @@ def run_status_loop() -> None:
                     safe_send_message(
                         notifier,
                         format_stats_message(history, settings),
+                        menu_keyboard(),
+                    )
+                elif is_paper_request(text):
+                    safe_send_message(
+                        notifier,
+                        format_paper_summary(paper_broker),
                         menu_keyboard(),
                     )
                 elif why_target is not None:
@@ -1292,6 +1360,7 @@ def run_dump_loop(source: str) -> None:
     scanner.store.load()
     notifier = build_notifier(settings)
     ai_analyzer = build_openai_analyzer(settings)
+    paper_broker = PaperBroker(data_path("scanner.db"), settings)
 
     while not STOP_EVENT.is_set():
         if is_paused(scanner_name):
@@ -1328,6 +1397,7 @@ def run_dump_loop(source: str) -> None:
                     ai_analyzer=ai_analyzer,
                     execution_quote_provider=execution_client.get_best_bid_ask,
                     entry_quote_scheduler=schedule_entry_quote_scenarios,
+                    paper_broker=paper_broker,
                 )
             reviewed = history.update_signal_reviews(
                 max_lag_seconds=settings.dump_review_max_lag_seconds,
@@ -1359,6 +1429,52 @@ def run_dump_loop(source: str) -> None:
         wait_or_stop(settings.dump_scan_interval_seconds)
 
 
+def run_paper_loop() -> None:
+    settings = get_settings()
+    if not settings.paper_trading_enabled:
+        print("Paper trading disabled by PAPER_TRADING_ENABLED=false", flush=True)
+        return
+
+    broker = PaperBroker(data_path("scanner.db"), settings)
+    quote_client = build_bybit_client(settings)
+    print(
+        "Paper trading active: local virtual positions only; live orders are blocked.",
+        flush=True,
+    )
+    while not STOP_EVENT.is_set():
+        try:
+            ticker_cache = None
+
+            def get_quote(symbol: str):
+                nonlocal ticker_cache
+                if ticker_cache is None:
+                    ticker_cache = {
+                        ticker.symbol: ticker
+                        for ticker in quote_client.get_linear_tickers()
+                        if ticker.bid_price > 0 and ticker.ask_price > 0
+                    }
+                quote = ticker_cache.get(symbol)
+                if quote is None:
+                    raise RuntimeError(f"Bybit ticker is unavailable for {symbol}")
+                return quote
+
+            updated, closed = broker.update_open_positions(
+                get_quote,
+            )
+            if closed:
+                print(
+                    f"Paper positions updated={updated}, closed={closed}",
+                    flush=True,
+                )
+        except Exception as error:
+            print(f"Paper trading loop error: {error}", flush=True)
+            try:
+                broker.record_heartbeat(loop_errors=1)
+            except Exception as heartbeat_error:
+                print(f"Paper heartbeat failed: {heartbeat_error}", flush=True)
+        wait_or_stop(settings.paper_poll_interval_seconds)
+
+
 def main() -> None:
     install_signal_handlers()
     settings = get_settings()
@@ -1376,7 +1492,9 @@ def main() -> None:
         f"build={build_commit()[:12]}, "
         f"schema={HISTORY_SCHEMA_VERSION}, "
         f"config={dump_config_hash(settings_snapshot)}, "
-        f"paused={persistent_pause}",
+        f"paused={persistent_pause}, "
+        f"paper_trading={settings.paper_trading_enabled}, "
+        "live_trading=False",
         flush=True,
     )
     dump_bybit_thread = threading.Thread(
@@ -1392,17 +1510,26 @@ def main() -> None:
         daemon=True,
     )
     status_thread = threading.Thread(target=run_status_loop, name="status-commands", daemon=True)
-    worker_threads = [
+    scanner_threads = [
         dump_bybit_thread,
         dump_binance_thread,
     ]
-    for thread in worker_threads:
+    for thread in scanner_threads:
         thread.start()
     status_thread.start()
+    paper_thread = None
+    if settings.paper_trading_enabled:
+        paper_thread = threading.Thread(
+            target=run_paper_loop,
+            name="paper-trading",
+            daemon=True,
+        )
+        paper_thread.start()
     status_restart_after = 0.0
+    paper_restart_after = 0.0
 
     while not STOP_EVENT.is_set():
-        if not any(thread.is_alive() for thread in worker_threads):
+        if not any(thread.is_alive() for thread in scanner_threads):
             print("All scanner threads stopped.", flush=True)
             break
         if (
@@ -1419,11 +1546,27 @@ def main() -> None:
             )
             status_thread.start()
             status_restart_after = time.monotonic() + 30
+        if (
+            settings.paper_trading_enabled
+            and paper_thread is not None
+            and not paper_thread.is_alive()
+            and time.monotonic() >= paper_restart_after
+        ):
+            print("Paper trading loop stopped; restarting it.", flush=True)
+            paper_thread = threading.Thread(
+                target=run_paper_loop,
+                name="paper-trading",
+                daemon=True,
+            )
+            paper_thread.start()
+            paper_restart_after = time.monotonic() + 30
         wait_or_stop(1)
 
-    for thread in worker_threads:
+    for thread in scanner_threads:
         thread.join(timeout=5)
     status_thread.join(timeout=5)
+    if paper_thread is not None:
+        paper_thread.join(timeout=5)
     print("Bot stopped.", flush=True)
 
 

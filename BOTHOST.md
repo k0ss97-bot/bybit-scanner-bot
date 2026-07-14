@@ -68,6 +68,23 @@ DUMP_CROSS_EXCHANGE_MAX_AGE_SECONDS=300
 DUMP_EXECUTION_QUOTE_MAX_AGE_SECONDS=15
 DUMP_ENTRY_QUOTE_DELAYS_SECONDS=5,15,30
 DUMP_REVIEW_MAX_LAG_SECONDS=300
+
+PAPER_TRADING_ENABLED=true
+PAPER_POLL_INTERVAL_SECONDS=15
+PAPER_STARTING_EQUITY_USDT=10000
+PAPER_RISK_PER_TRADE_PCT=0.5
+PAPER_MAX_NOTIONAL_PCT=25
+PAPER_MAX_OPEN_POSITIONS=3
+PAPER_EPISODE_COOLDOWN_MINUTES=30
+PAPER_STOP_LOSS_PCT=2
+PAPER_MAX_HOLDING_MINUTES=240
+PAPER_TRAILING_ACTIVATION_PCT=2
+PAPER_TRAILING_DISTANCE_PCT=1.5
+PAPER_ENTRY_FEE_BPS=5.5
+PAPER_EXIT_FEE_BPS=5.5
+PAPER_SLIPPAGE_BPS=5
+PAPER_FUNDING_BUFFER_BPS=1
+
 DUMP_LIQUIDATION_MIN_OI_DROP_PCT=1.5
 DUMP_TREND_MIN_OI_CHANGE_PCT=-0.5
 DUMP_CHART_ENABLED=true
@@ -99,12 +116,19 @@ DUMP_SYMBOL_COOLDOWN_MINUTES=60
 ❓ Почему нет сигналов - причины отсечения
 🎯 Ближайшие - кандидаты из последнего скана
 🕘 Последние сигналы - последние сигналы из базы
+🧪 Paper - виртуальный баланс, сделки и просадка
 🔻 DUMP BYBIT - статус Bybit dump-сканера
 🔻 DUMP BINANCE - статус Binance dump-сканера
 ⏸ Пауза / ▶️ Старт - временно остановить или запустить dump-сканеры
 ```
 
 Если кнопки не появились, напиши боту `/start` или `меню`.
+
+## Безопасный этап автоматической торговли
+
+`PAPER_TRADING_ENABLED=true` не требует Bybit API key и не может отправить реальный ордер. После каждого настоящего Telegram-сигнала бот открывает две локальные виртуальные SHORT-сделки и проверяет их по свежему ask Bybit каждые 15 секунд: фиксированный выход через четыре часа и trailing-вариант. Комиссии и проскальзывание уже вычитаются.
+
+Команда `/paper` показывает накопленный результат. Непрерывность paper-наблюдения сбрасывается после остановки дольше часа. Реальный режим будет добавляться отдельно только после прохождения `Automation gate`; в текущей версии он жёстко заблокирован.
 
 ## Что ищет DUMP TREND
 

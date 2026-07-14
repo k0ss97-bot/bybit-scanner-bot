@@ -6,3 +6,4 @@ data/
 state.json
 pump_state.json
 *.log
+research/results/
